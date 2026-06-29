@@ -111,9 +111,11 @@ dbt needs a connection profile in your home directory:
 
 ```powershell
 # Windows
+New-Item -ItemType Directory -Force $HOME\.dbt | Out-Null
 Copy-Item dbt_project\profiles.yml.template $HOME\.dbt\profiles.yml
 
 # macOS / Linux
+mkdir -p ~/.dbt
 cp dbt_project/profiles.yml.template ~/.dbt/profiles.yml
 ```
 

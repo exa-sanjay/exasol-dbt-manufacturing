@@ -87,7 +87,7 @@ sources:
       - name: maintenance_recommendations
         description: >
           AI-generated maintenance work orders — root cause, action, estimated time-to-failure.
-          Written by factory_ai_agent.py using qwen2.5:0.5b via local Ollama.
+          Written by factory_ai_agent.py using qwen2.5:7b via local Ollama.
         columns:
           - name: rec_id
             tests: [unique, not_null]

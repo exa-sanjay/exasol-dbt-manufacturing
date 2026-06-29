@@ -53,11 +53,11 @@ EXA_DSN  = f"{EXA_HOST}:{EXA_PORT}"
 EXA_USER = _get("exasol", "user",     "EXASOL_USER",     "sys")
 EXA_PASS = _get("exasol", "password", "EXASOL_PASSWORD", "exasol")
 
-BFS_HOST   = _get("bucketfs", "host",     "EXASOL_HOST",          "localhost")
-BFS_PORT   = _get("bucketfs", "port",     "EXASOL_BUCKETFS_PORT", "2581")
-BFS_BUCKET = _get("bucketfs", "bucket",   "",                     "default")
-BFS_USER   = _get("bucketfs", "username", "",                     "w")
-BFS_PASS   = _get("bucketfs", "password", "",                     "write")
+BFS_HOST   = _get("bucketfs", "host",     "EXASOL_HOST",              "localhost")
+BFS_PORT   = _get("bucketfs", "port",     "EXASOL_BUCKETFS_PORT",     "2581")
+BFS_BUCKET = _get("bucketfs", "bucket",   "",                         "default")
+BFS_USER   = _get("bucketfs", "username", "",                         "w")
+BFS_PASS   = _get("bucketfs", "password", "EXASOL_BFS_WRITE_PASS",    "write")
 
 _pg_host_raw = _get("postgres", "host", "POSTGRES_HOST", "_auto_detect_")
 if _pg_host_raw == "_auto_detect_":
@@ -101,19 +101,47 @@ def download_jar(url: str, dest: str):
     log(f"  -> saved to {dest}")
 
 
-def upload_to_bucketfs(local_path: str, remote_name: str):
-    """Upload a file to BucketFS using the exapump CLI (reads ~/.exapump/config.toml)."""
-    import subprocess
-    log(f"Uploading {remote_name} to BucketFS via exapump ...")
-    result = subprocess.run(
-        ["exapump", "bucketfs", "cp", local_path, remote_name],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"exapump upload failed for {remote_name}:\n{result.stderr}"
+def _detect_bfs_password() -> str:
+    """Try to read the BucketFS write password from the running Docker container.
+    Falls back to prompting the user if auto-detection fails."""
+    import subprocess, re
+    try:
+        r = subprocess.run(
+            ["docker", "exec", "mfg_exasol", "grep", "-m1", "WritePasswd", "/exa/etc/EXAConf"],
+            capture_output=True, text=True, timeout=10,
         )
-    log(f"  -> uploaded OK")
+        if r.returncode == 0:
+            m = re.search(r"WritePasswd\s*=\s*(\S+)", r.stdout)
+            if m:
+                log("Auto-detected BucketFS write password from container.")
+                return m.group(1)
+    except Exception:
+        pass
+
+    if BFS_PASS != "write":
+        return BFS_PASS
+
+    print("\n[!] Could not auto-detect BucketFS password.")
+    print("    Find it manually:  docker exec mfg_exasol grep WritePasswd /exa/etc/EXAConf")
+    return input("    Enter BucketFS write password: ").strip()
+
+
+def upload_to_bucketfs(local_path: str, remote_name: str, password: str):
+    """Upload a file to BucketFS via HTTPS PUT (no external tools required)."""
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    url = f"https://{BFS_HOST}:{BFS_PORT}/{BFS_BUCKET}/{remote_name}"
+    log(f"Uploading {remote_name} ...")
+    with open(local_path, "rb") as fh:
+        resp = requests.put(url, data=fh, auth=(BFS_USER, password), verify=False, timeout=120)
+    if not resp.ok:
+        raise RuntimeError(
+            f"BucketFS upload failed ({resp.status_code}): {resp.text[:300]}\n"
+            f"  URL: {url}\n"
+            f"  Tip: run  docker exec mfg_exasol grep WritePasswd /exa/etc/EXAConf\n"
+            f"       then set env var EXASOL_BFS_WRITE_PASS=<password> and retry."
+        )
+    log(f"  -> OK")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -149,9 +177,10 @@ def main():
             f.write(f"FETCHSIZE=100000\n")
             f.write(f"INSERTSIZE=-1\n")
 
-        upload_to_bucketfs(adapter_path, ADAPTER_JAR)
-        upload_to_bucketfs(pg_jdbc_path, f"drivers/jdbc/{PG_JDBC_JAR}")
-        upload_to_bucketfs(cfg_path, "drivers/jdbc/settings.cfg")
+        bfs_pw = _detect_bfs_password()
+        upload_to_bucketfs(adapter_path, ADAPTER_JAR, bfs_pw)
+        upload_to_bucketfs(pg_jdbc_path, f"drivers/jdbc/{PG_JDBC_JAR}", bfs_pw)
+        upload_to_bucketfs(cfg_path, "drivers/jdbc/settings.cfg", bfs_pw)
 
     # ── 3. Create adapter script ───────────────────────────────────────────────
     print("\n==> Creating adapter script ...")
@@ -210,7 +239,28 @@ def main():
     """)
     log("IOT_RAW tables created.")
 
-    # ── 7. Seed sensor readings ───────────────────────────────────────────────
+    # ── 7. Create AI_SCHEMA stub ──────────────────────────────────────────────
+    # mart_ai_maintenance_queue.sql joins this table at dbt-run time.
+    # It's empty until `ai-setup` + `ai-agent` run — that's fine.
+    print("\n==> Creating AI_SCHEMA stub ...")
+    con.execute("CREATE SCHEMA IF NOT EXISTS AI_SCHEMA")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS (
+            rec_id                     INT,
+            machine_id                 INT,
+            machine_name               VARCHAR(100),
+            generated_at               TIMESTAMP,
+            anomaly_score              DECIMAL(6,3),
+            root_cause                 VARCHAR(500),
+            recommended_action         VARCHAR(500),
+            estimated_hours_to_failure DECIMAL(6,1),
+            confidence                 VARCHAR(20),
+            similar_pattern_ids        VARCHAR(200)
+        )
+    """)
+    log("AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS ready (empty until ai-setup + ai-agent).")
+
+    # ── 9. Seed sensor readings ───────────────────────────────────────────────
     # 10 machines × 90 days × 288 readings/day (5-min intervals) ≈ 259 200 rows
     print("\n==> Seeding sensor readings (~260k rows) ...")
 
@@ -279,7 +329,7 @@ def main():
     sensor_count = con.execute("SELECT COUNT(*) FROM IOT_RAW.SENSOR_READINGS").fetchval()
     log(f"Sensor readings loaded: {sensor_count:,}")
 
-    # ── 8. Seed downtime events ───────────────────────────────────────────────
+    # ── 10. Seed downtime events ──────────────────────────────────────────────
     print("\n==> Seeding downtime events ...")
     if downtime_rows:
         downtime_rows_with_id = [
