@@ -37,10 +37,20 @@ A self-contained demo showing how Exasol acts as the central analytics engine in
 
 | Tool | Version | Notes |
 |---|---|---|
-| Docker + Docker Compose | 20+ | Runs Exasol, PostgreSQL, and Ollama |
+| Docker Desktop | 4.0+ | Runs Exasol, PostgreSQL, and Ollama |
 | Python | 3.10+ | Use a virtual environment (recommended) |
+| Git | any | To clone the repo |
 
-Install all Python dependencies (includes dbt-core, dbt-exasol, dagster):
+**System resources:** 16 GB RAM recommended. Exasol uses ~4 GB and the AI model (`qwen2.5:7b`) uses ~8 GB during inference. Also reserve ~10 GB disk space (Docker images + model download).
+
+**Clone the repo:**
+
+```bash
+git clone https://github.com/<your-username>/exasol-dbt-manufacturing.git
+cd exasol-dbt-manufacturing
+```
+
+**Install Python dependencies** (includes dbt-core, dbt-exasol, dagster):
 
 ```powershell
 # Recommended: use a virtual environment
@@ -51,6 +61,13 @@ venv\Scripts\activate        # Windows
 pip install -r requirements.txt
 ```
 
+> **Windows users:** if `.\run.ps1` is blocked by execution policy, run once:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+> **macOS / Linux users:** use `make <command>` instead of `.\run.ps1 <command>` throughout this guide.
+
 ---
 
 ## Repository Layout
@@ -58,7 +75,8 @@ pip install -r requirements.txt
 ```
 exasol-dbt-manufacturing/
 ├── docker-compose.yml          # Exasol, PostgreSQL, Ollama
-├── Makefile                    # All runnable targets
+├── run.ps1                     # Windows command runner
+├── Makefile                    # macOS / Linux command runner
 ├── requirements.txt
 ├── pyproject.toml              # Dagster code location config
 │
@@ -70,11 +88,11 @@ exasol-dbt-manufacturing/
 │   └── pull_ollama_model.py    # Pull Ollama LLM model (first run only)
 │
 ├── dbt_project/
+│   ├── profiles.yml.template   # Copy to ~/.dbt/profiles.yml (Step 1b)
 │   ├── models/
 │   │   ├── staging/            # 5 views — type-cast raw sources
 │   │   ├── intermediate/       # 3 views — OEE component calculations
 │   │   └── marts/              # 4 tables — final analytics + AI queue
-│   └── profiles.yml (in ~/.dbt/)
 │
 ├── orchestration/              # Dagster pipeline
 │   ├── __init__.py
@@ -96,12 +114,12 @@ exasol-dbt-manufacturing/
 .\run.ps1 up
 ```
 
-Starts three Docker services and waits for both databases to be ready:
-- `exasol` — Exasol Nano on ports `8563` (SQL) / `2581` (BucketFS)
-- `postgres` — PostgreSQL (ERP data)
+Starts three Docker services and waits until all are ready:
+- `exasol` — Exasol on ports `8563` (SQL) / `2581` (BucketFS)
+- `postgres` — PostgreSQL ERP data
 - `ollama` — Local LLM server on port `11434`
 
-First start takes ~90 seconds while Exasol initialises.
+**First start takes ~2 minutes** while Exasol initialises its internal storage.
 
 ---
 
@@ -119,7 +137,7 @@ mkdir -p ~/.dbt
 cp dbt_project/profiles.yml.template ~/.dbt/profiles.yml
 ```
 
-The default values in the template connect to the local Docker Exasol — no edits needed for the demo.
+The default values connect to the local Docker Exasol — no edits needed.
 
 ---
 
@@ -129,7 +147,7 @@ The default values in the template connect to the local Docker Exasol — no edi
 .\run.ps1 seed
 ```
 
-Creates all schemas, the Virtual Schema pointing to PostgreSQL, and loads:
+Downloads two JDBC adapter JARs (~20 MB, internet required), uploads them to Exasol's BucketFS, creates all schemas and the Virtual Schema pointing at PostgreSQL, then loads:
 
 | Table | Rows | Description |
 |---|---|---|
@@ -139,6 +157,8 @@ Creates all schemas, the Virtual Schema pointing to PostgreSQL, and loads:
 | `IOT_RAW.SENSOR_READINGS` | ~260 000 | 5-min sensor readings, 90 days |
 | `IOT_RAW.DOWNTIME_EVENTS` | ~260 | Derived from sensor anomalies |
 
+**Takes ~5–10 minutes** on first run.
+
 ---
 
 ### Step 3 — Run the dbt pipeline
@@ -147,7 +167,7 @@ Creates all schemas, the Virtual Schema pointing to PostgreSQL, and loads:
 .\run.ps1 dbt-run
 ```
 
-Builds all 12 models in dependency order. Takes ~25 seconds.
+Downloads `dbt_utils` package (~1 MB, internet required on first run), then builds all 12 models in dependency order. **Takes ~25 seconds.**
 
 ```powershell
 .\run.ps1 dbt-test    # optional — run OEE bounds + nullability tests
@@ -162,9 +182,8 @@ Builds all 12 models in dependency order. Takes ~25 seconds.
 .\run.ps1 ai-setup
 ```
 
-- Creates `AI_SCHEMA.FAILURE_PATTERNS` and `AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS` in Exasol
-- Seeds ~241 failure pattern vectors (6D feature vectors built from historical downtime + OEE data)
-- Pulls the Ollama LLM model `qwen2.5:7b` (~4 GB, first run only)
+- Creates `AI_SCHEMA.FAILURE_PATTERNS` and seeds ~241 historical failure pattern vectors
+- Pulls the Ollama model `qwen2.5:7b` — **~4 GB download, takes 5–30 min depending on your connection** (first run only; subsequent runs are instant)
 
 ---
 
@@ -174,13 +193,15 @@ Builds all 12 models in dependency order. Takes ~25 seconds.
 .\run.ps1 ai-agent
 ```
 
-For each at-risk machine the agent:
+Processes each at-risk machine in sequence:
 1. Builds a 6D feature vector (machine type, temp/vibration/power Z-scores, OEE drop)
 2. Runs cosine similarity SQL inside Exasol to retrieve the top-3 similar past failures
 3. Calls Ollama (`qwen2.5:7b`, local) with the machine stats + similar failures
 4. Inserts the LLM response into `AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS`
 
-After it runs, query the results:
+**Takes ~5–15 minutes** (roughly 60–90 seconds per at-risk machine).
+
+After it finishes, query the results (see [Connecting to Exasol](#connecting-to-exasol)):
 
 ```sql
 SELECT machine_name, urgency_tier, estimated_hours_to_failure,
@@ -217,6 +238,32 @@ To simulate live sensor data flowing in:
 ```powershell
 .\run.ps1 seed-uci-live    # streams one reading per machine every 5 minutes
 ```
+
+---
+
+## Connecting to Exasol
+
+Use Python with pyexasol (already installed) to run SQL queries:
+
+```python
+import pyexasol
+con = pyexasol.connect(
+    dsn="localhost:8563",
+    user="sys",
+    password="exasol",
+    websocket_sslopt={"cert_reqs": 0}
+)
+result = con.execute("SELECT COUNT(*) FROM IOT_RAW.SENSOR_READINGS").fetchval()
+print(result)   # ~260 000
+con.close()
+```
+
+Alternatively, connect with any JDBC-compatible SQL client (e.g. DBeaver) using:
+- **Host:** `localhost`
+- **Port:** `8563`
+- **User:** `sys`
+- **Password:** `exasol`
+- **Driver:** Exasol JDBC (download from exasol.com)
 
 ---
 
@@ -320,7 +367,7 @@ IoT Sensor Readings  ──►  mart_machine_health (anomaly_flag + sensor stats
 The pipeline is orchestrated by Dagster with four assets executing in dependency order:
 
 ```
-core_dbt_assets  (12 dbt models, excludes mart_ai_maintenance_queue)
+core_dbt_assets  (11 dbt models, excludes mart_ai_maintenance_queue)
         │
         ▼
    ai_tables  (re-seeds AI_SCHEMA.FAILURE_PATTERNS from latest mart data)
@@ -334,6 +381,8 @@ mart_ai_maintenance_queue_refresh  (rebuilds the final AI mart via dbt)
 
 The `new_sensor_data_sensor` polls `IOT_RAW.SENSOR_READINGS` every 60 seconds. When the row count increases it triggers `manufacturing_refresh_job`, running all four assets automatically.
 
+> **Note:** the sensor resets to *paused* every time Dagster restarts. Re-enable it in the UI after each `.\run.ps1 orchestrate`.
+
 ### Manual trigger
 
 In the Dagster UI: **Jobs → manufacturing_refresh_job → Materialize all**
@@ -342,10 +391,11 @@ In the Dagster UI: **Jobs → manufacturing_refresh_job → Materialize all**
 
 ## Command Reference
 
-Run all commands from the project root with `.\run.ps1 <command>`:
-
 ```
-up              Start all Docker containers
+.\run.ps1 <command>      # Windows
+make <command>           # macOS / Linux
+
+up              Start all Docker containers (waits until ready)
 seed            Seed Exasol + PostgreSQL with synthetic IoT and ERP data
 dbt-run         Build all 12 dbt models
 dbt-test        Run dbt tests (OEE bounds, not_null, unique)
@@ -355,7 +405,7 @@ seed-uci        Load real UCI AI4I 2020 Predictive Maintenance dataset (batch)
 seed-uci-live   Stream UCI data in real time (one reading per machine per 5 min)
 
 ai-setup        Create AI tables + seed failure vectors + pull Ollama model
-ai-agent        Run the Factory AI Agent
+ai-agent        Run the Factory AI Agent (~5-15 min)
 
 orchestrate     Start Dagster UI at http://localhost:3000
 demo            Full pipeline: up + seed + dbt-run + dbt-test + docs
@@ -366,16 +416,16 @@ clean           Stop containers and remove all volumes
 
 ## Verification Checklist
 
-After `.\run.ps1 demo` then `.\run.ps1 ai-setup` then `.\run.ps1 ai-agent`:
+After completing Steps 1–5, verify everything is working using the [Python connection snippet](#connecting-to-exasol):
 
 - [ ] `docker ps` shows `mfg_exasol`, `mfg_postgres`, `mfg_ollama` all running
 - [ ] `SELECT COUNT(*) FROM IOT_RAW.SENSOR_READINGS` returns ~260 000
-- [ ] `SELECT * FROM ERP_PG.MACHINES` returns 10 rows through the Virtual Schema
-- [ ] `dbt run` completes: 12 models, 0 errors
-- [ ] `dbt test` passes all OEE bounds and nullability checks
+- [ ] `SELECT COUNT(*) FROM ERP_PG.MACHINES` returns 10 (Virtual Schema working)
+- [ ] dbt run completed: 12 models, 0 errors
+- [ ] dbt test passed all OEE bounds and nullability checks
 - [ ] `SELECT COUNT(*) FROM AI_SCHEMA.FAILURE_PATTERNS` returns ~241
 - [ ] `SELECT COUNT(*) FROM AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS` returns > 0
-- [ ] `SELECT * FROM MARTS.MART_AI_MAINTENANCE_QUEUE` shows at-risk machines with AI recommendations
+- [ ] `SELECT * FROM MARTS.MART_AI_MAINTENANCE_QUEUE` shows at-risk machines with recommendations
 - [ ] `.\run.ps1 orchestrate` → Dagster UI loads at http://localhost:3000 with 4 assets, 1 job, 1 sensor
 
 ---
