@@ -37,14 +37,17 @@ A self-contained demo showing how Exasol acts as the central analytics engine in
 
 | Tool | Version | Notes |
 |---|---|---|
-| Docker + Docker Compose | 20+ | Runs Exasol, PostgreSQL, Ollama |
-| Python | 3.10+ | |
-| dbt-core + dbt-exasol | 1.11+ | |
-| dagster + dagster-dbt | 1.9+ | For automated orchestration |
+| Docker + Docker Compose | 20+ | Runs Exasol, PostgreSQL, and Ollama |
+| Python | 3.10+ | Use a virtual environment (recommended) |
 
-Install all Python dependencies:
+Install all Python dependencies (includes dbt-core, dbt-exasol, dagster):
 
 ```powershell
+# Recommended: use a virtual environment
+python -m venv venv
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # macOS / Linux
+
 pip install -r requirements.txt
 ```
 
@@ -99,6 +102,22 @@ Starts three Docker services and waits for both databases to be ready:
 - `ollama` — Local LLM server on port `11434`
 
 First start takes ~90 seconds while Exasol initialises.
+
+---
+
+### Step 1b — Configure dbt connection
+
+dbt needs a connection profile in your home directory:
+
+```powershell
+# Windows
+Copy-Item dbt_project\profiles.yml.template $HOME\.dbt\profiles.yml
+
+# macOS / Linux
+cp dbt_project/profiles.yml.template ~/.dbt/profiles.yml
+```
+
+The default values in the template connect to the local Docker Exasol — no edits needed for the demo.
 
 ---
 

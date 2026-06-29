@@ -15,7 +15,7 @@ MODEL      = "qwen2.5:7b"
 
 def pull_model():
     print(f"==> Pulling Ollama model '{MODEL}' from {OLLAMA_URL} ...")
-    print("    (This downloads ~400 MB on first run — subsequent runs are instant.)")
+    print("    (This downloads ~4 GB on first run — subsequent runs are instant.)")
 
     try:
         resp = requests.post(

@@ -25,12 +25,11 @@ $ErrorActionPreference = "Stop"
 
 $ROOT = $PSScriptRoot
 
-# ── resolve the correct dbt (dbt-core with exasol, not dbt-fusion) ──────────
-$DBT_PIP = Join-Path $env:LOCALAPPDATA `
-    "Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\LocalCache\local-packages\Python312\Scripts\dbt.exe"
-
-if (Test-Path $DBT_PIP) {
-    $DBT = $DBT_PIP
+# ── resolve dbt ──────────────────────────────────────────────────────────────
+# Set DBT_CMD env var to override (e.g. if dbt-fusion is on PATH and conflicts):
+#   $env:DBT_CMD = "path\to\venv\Scripts\dbt.exe"
+if ($env:DBT_CMD) {
+    $DBT = $env:DBT_CMD
 } elseif (Get-Command dbt -ErrorAction SilentlyContinue) {
     $DBT = (Get-Command dbt).Source
 } else {

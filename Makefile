@@ -1,7 +1,7 @@
 .PHONY: demo up seed seed-uci seed-uci-live dbt-run dbt-test docs clean help ai-setup ai-agent orchestrate
 
 PYTHON := python3
-DBT    := $(shell python3 -c "import sys,pathlib; p=pathlib.Path.home()/'AppData/Local/Packages/PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0/LocalCache/local-packages/Python312/Scripts/dbt.exe'; print(str(p) if p.exists() else 'dbt')")
+DBT    := $(or $(DBT_CMD),dbt)
 
 help:
 	@echo "Exasol + DBT Manufacturing OEE Demo  (with Self-Healing Factory AI)"

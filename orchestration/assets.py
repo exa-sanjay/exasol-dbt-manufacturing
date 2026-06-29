@@ -27,15 +27,6 @@ DBT_MANIFEST    = DBT_PROJECT_DIR / "target" / "manifest.json"
 def _find_dbt() -> str:
     if cmd := os.environ.get("DBT_CMD"):
         return cmd
-    # Prefer pip-installed dbt-core (has exasol adapter) over dbt-fusion on PATH
-    win_pip_path = (
-        Path.home()
-        / "AppData/Local/Packages"
-        / "PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0"
-        / "LocalCache/local-packages/Python312/Scripts/dbt.exe"
-    )
-    if win_pip_path.exists():
-        return str(win_pip_path)
     if found := shutil.which("dbt"):
         return found
     return "dbt"

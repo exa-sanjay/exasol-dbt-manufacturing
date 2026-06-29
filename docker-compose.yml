@@ -34,6 +34,15 @@ services:
       retries: 10
       start_period: 120s
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mfg_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
 volumes:
   postgres_data:
   exasol_data:
+  ollama_data:
