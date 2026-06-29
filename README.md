@@ -46,7 +46,7 @@ A self-contained demo showing how Exasol acts as the central analytics engine in
 **Clone the repo:**
 
 ```bash
-git clone https://github.com/<your-username>/exasol-dbt-manufacturing.git
+git clone https://github.com/SanjayG-Data/exasol-dbt-manufacturing.git
 cd exasol-dbt-manufacturing
 ```
 
