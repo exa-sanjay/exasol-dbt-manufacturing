@@ -1,0 +1,95 @@
+version: 2
+
+sources:
+  - name: erp_pg
+    description: >
+      ERP / MES data from PostgreSQL, federated into Exasol
+      via Virtual Schema (no data movement).
+    database: EXA_DB
+    schema: ERP_PG        # Exasol Virtual Schema name
+    tables:
+      - name: machines
+        description: "Machine master data — one row per physical machine."
+        columns:
+          - name: machine_id
+            description: "Surrogate PK (PostgreSQL SERIAL)."
+            tests:
+              - unique
+              - not_null
+          - name: theoretical_rate_per_hr
+            description: "Max units per hour at 100% performance."
+
+      - name: production_orders
+        description: "One row per machine per shift (8-hour window)."
+        columns:
+          - name: order_id
+            tests: [unique, not_null]
+          - name: machine_id
+            tests: [not_null]
+          - name: actual_qty
+            tests: [not_null]
+
+      - name: defects
+        description: "Quality defects detected during a production order."
+        columns:
+          - name: defect_id
+            tests: [unique, not_null]
+          - name: order_id
+            tests: [not_null]
+
+      - name: maintenance_schedules
+        description: "Planned and unplanned maintenance windows."
+        columns:
+          - name: schedule_id
+            tests: [unique, not_null]
+
+  - name: iot
+    description: >
+      High-volume IoT data stored natively in Exasol
+      (sensor readings and downtime events).
+    database: EXA_DB
+    schema: IOT_RAW
+    tables:
+      - name: sensor_readings
+        description: "One row per machine per 5-minute interval."
+        columns:
+          - name: machine_id
+            tests: [not_null]
+          - name: ts
+            tests: [not_null]
+
+      - name: downtime_events
+        description: "Unplanned stoppages detected from sensor anomalies."
+        columns:
+          - name: event_id
+            tests: [unique, not_null]
+          - name: machine_id
+            tests: [not_null]
+
+  - name: ai
+    description: >
+      AI_SCHEMA tables written by factory_ai_agent.py — the Self-Healing Factory AI System.
+      FAILURE_PATTERNS stores 6D feature vectors (Exasol as vector store).
+      MAINTENANCE_RECOMMENDATIONS stores Ollama-generated root cause analysis per at-risk machine.
+    database: EXA_DB
+    schema: AI_SCHEMA
+    tables:
+      - name: failure_patterns
+        description: >
+          6-dimensional feature vector per historical downtime event.
+          Used for cosine similarity search inside Exasol (vector store pattern).
+        columns:
+          - name: pattern_id
+            tests: [unique, not_null]
+          - name: machine_id
+            tests: [not_null]
+
+      - name: maintenance_recommendations
+        description: >
+          AI-generated maintenance work orders — root cause, action, estimated time-to-failure.
+          Written by factory_ai_agent.py using qwen2.5:0.5b via local Ollama.
+        columns:
+          - name: rec_id
+            tests: [unique, not_null]
+          - name: machine_id
+            tests: [not_null]

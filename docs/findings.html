@@ -1,0 +1,552 @@
+<title>Exasol + dbt — Bug &amp; Behavioral Findings</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --gr:#F7F6F2;--tx:#0E0E0E;--mu:#666;--ru:#D5D4CF;
+  --er:#C42B2B;--fx:#1D7A44;--nv:#1B3869;
+  --cb:#13131F;--cf:#0D1F17;--ct:#D8D6D0;
+  --eb:#FEF1F1;--tb:#ECEAE4
+}
+body{background:var(--gr);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.6}
+.page{max-width:960px;margin:0 auto;padding:3rem 1.5rem 6rem}
+
+/* HEADER */
+.ph{padding-bottom:2.5rem;border-bottom:2px solid var(--tx);margin-bottom:2.5rem}
+.pe{font-family:"Courier New",monospace;font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--mu);margin-bottom:.6rem}
+.ph h1{font-size:clamp(1.8rem,4vw,2.6rem);font-weight:700;letter-spacing:-.02em;line-height:1.1;margin-bottom:.65rem}
+.pd{color:var(--mu);font-size:13px;max-width:560px;margin-bottom:1.4rem}
+.ps{display:flex;gap:2rem;flex-wrap:wrap}
+.sn{font-family:"Courier New",monospace;font-size:1.5rem;font-weight:700;line-height:1;color:var(--nv);display:block}
+.sl{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--mu)}
+
+/* LEGEND */
+.leg{display:flex;gap:1.5rem;flex-wrap:wrap;padding:.65rem 1rem;background:#fff;border:1px solid var(--ru);border-radius:3px;margin-bottom:2.5rem}
+.li{display:flex;align-items:center;gap:.35rem;font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.09em}
+.ld{width:7px;height:7px;border-radius:50%}
+.ts{font-family:"Courier New",monospace;font-size:9px;padding:.12rem .35rem;border-radius:2px;background:#FFF3CD;color:#856404;border:1px solid #F5CB5C;letter-spacing:.07em;text-transform:uppercase}
+
+/* CATEGORY SECTION */
+.cs{display:grid;grid-template-columns:28px 1fr;gap:0 1.25rem;margin-bottom:2.75rem}
+.ct{grid-column:1;grid-row:1;align-self:start;padding-top:.4rem}
+.cl{writing-mode:vertical-rl;transform:rotate(180deg);font-family:"Courier New",monospace;font-size:9px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#fff;background:var(--nv);padding:.7rem .3rem;white-space:nowrap;border-radius:2px 2px 0 0}
+.cb{grid-column:2}
+.chr{display:flex;align-items:baseline;justify-content:space-between;padding-bottom:.45rem;border-bottom:1px solid var(--ru);margin-bottom:1.25rem}
+.ctt{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:var(--nv)}
+.cc{font-family:"Courier New",monospace;font-size:10px;color:var(--mu)}
+
+/* ISSUE */
+.is{display:grid;grid-template-columns:2.5rem 1fr;gap:0 .9rem;padding:1.1rem 0;border-bottom:1px solid var(--ru)}
+.is:last-child{border-bottom:none}
+.is:hover{background:rgba(27,56,105,.03)}
+.in{font-family:"Courier New",monospace;font-size:1.25rem;color:#C8C7C2;line-height:1.4;padding-top:.1rem}
+.it{font-size:.92rem;font-weight:600;margin-bottom:.3rem;line-height:1.35}
+.im{font-size:12.5px;color:var(--mu);margin-bottom:.65rem;line-height:1.5}
+.tgs{display:flex;flex-wrap:wrap;gap:.25rem;margin-bottom:.65rem}
+.tg{font-family:"Courier New",monospace;font-size:9px;padding:.1rem .35rem;border-radius:2px;text-transform:uppercase;letter-spacing:.07em}
+.tf{background:var(--tb);color:var(--mu)}
+.bks{display:flex;flex-direction:column;gap:.4rem;margin-top:.6rem}
+.bk{border-radius:2px;overflow:hidden}
+.bh{font-family:"Courier New",monospace;font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;font-weight:700;padding:.28rem .6rem}
+.bb{padding:.55rem .6rem;font-family:"Cascadia Code","Fira Code",Consolas,"Courier New",monospace;font-size:11.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+/* tried */
+.bt .bh{background:#1E0E0E;color:#E07070;border-left:3px solid var(--er)}
+.bt .bb{background:var(--cb);color:var(--ct);border-left:3px solid var(--er)}
+/* error */
+.be .bh{background:#FCDEDE;color:var(--er)}
+.be .bb{background:var(--eb);color:var(--er);border-left:3px solid var(--er);font-size:11px}
+/* fix */
+.bfx .bh{background:#0A1910;color:#5EC983;border-left:3px solid var(--fx)}
+.bfx .bb{background:var(--cf);color:var(--ct);border-left:3px solid var(--fx)}
+/* note */
+.bn .bh{background:var(--tb);color:var(--mu)}
+.bn .bb{background:#fff;color:var(--tx);border-left:3px solid var(--ru);font-family:-apple-system,system-ui,sans-serif;font-size:12.5px}
+
+@media(prefers-reduced-motion:reduce){.is{transition:none}}
+@media(max-width:580px){
+  .cs{grid-template-columns:20px 1fr;gap:0 .6rem}
+  .is{grid-template-columns:1.8rem 1fr;gap:0 .6rem}
+  .in{font-size:1rem}
+  .ps{gap:1.25rem}
+}
+</style>
+
+<div class="page">
+
+<header class="ph">
+  <div class="pe">Exasol 2026.1.0 · dbt-exasol 1.11.0 · pyexasol 0.27.x · June 2026</div>
+  <h1>Bug &amp; Behavioral Findings</h1>
+  <p class="pd">SQL dialect differences, Python driver quirks, and deployment gaps found during the Manufacturing OEE demo. Each entry is something that diverged from documented or expected behavior.</p>
+  <div class="ps">
+    <div><span class="sn">20</span><span class="sl">issues total</span></div>
+    <div><span class="sn">6</span><span class="sl">categories</span></div>
+    <div><span class="sn">4</span><span class="sl">SQL dialect</span></div>
+    <div><span class="sn">6</span><span class="sl">pyexasol API</span></div>
+    <div><span class="sn">5</span><span class="sl">virtual schema</span></div>
+  </div>
+</header>
+
+<div class="leg">
+  <div class="li"><div class="ld" style="background:#C42B2B"></div>Tried / expected</div>
+  <div class="li"><div class="ld" style="background:#E07070"></div>Actual error</div>
+  <div class="li"><div class="ld" style="background:#1D7A44"></div>Fix applied</div>
+  <div class="li"><span class="ts">SKILL FILE</span>&nbsp;diverges from skill file</div>
+</div>
+
+<!-- ───────────────────────────────────────────────── -->
+<!-- A · EXASOL SQL DIALECT                           -->
+<!-- ───────────────────────────────────────────────── -->
+<section class="cs">
+  <div class="ct" aria-hidden="true"><span class="cl">Exasol SQL Dialect</span></div>
+  <div class="cb">
+    <div class="chr"><span class="ctt">Exasol SQL Dialect</span><span class="cc">4 issues · #01 – #04</span></div>
+
+    <div class="is">
+      <div class="in">01</div>
+      <div>
+        <h3 class="it">DATE_TRUNC argument order is reversed from PostgreSQL</h3>
+        <p class="im">Exasol puts the unit string first, then the timestamp value. All six occurrences used the wrong order.</p>
+        <div class="tgs"><span class="ts">SKILL FILE</span><span class="tg tf">stg_iot__sensor_readings.sql</span><span class="tg tf">stg_iot__downtime_events.sql</span><span class="tg tf">stg_erp__production_orders.sql</span><span class="tg tf">mart_production_summary.sql</span><span class="tg tf">setup_ai_tables.py</span><span class="tg tf">factory_ai_agent.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — value-first (PostgreSQL style)</div><div class="bb">DATE_TRUNC(ts_column, 'HOUR')
+DATE_TRUNC(started_at, 'DAY')</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">Feature not supported: date_trunc with wrong type</div></div>
+          <div class="bk bfx"><div class="bh">Fix — unit-first</div><div class="bb">DATE_TRUNC('HOUR', ts_column)
+DATE_TRUNC('DAY',  started_at)</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">02</div>
+      <div>
+        <h3 class="it">Timestamp subtraction cannot be cast to FLOAT — use SECONDS_BETWEEN()</h3>
+        <p class="im">Exasol 2026.1.0 does not allow casting timestamp interval arithmetic to a numeric type. A dedicated function is required.</p>
+        <div class="tgs"><span class="tg tf">stg_iot__downtime_events.sql</span><span class="tg tf">stg_erp__production_orders.sql</span><span class="tg tf">setup_ai_tables.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried</div><div class="bb">CAST(ended_at - started_at AS FLOAT) / 3600.0  AS duration_hrs</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">Cannot cast from TIMESTAMP to DOUBLE</div></div>
+          <div class="bk bfx"><div class="bh">Fix</div><div class="bb">CAST(SECONDS_BETWEEN(started_at, ended_at) / 3600.0 AS DECIMAL(8,4))  AS duration_hrs</div></div>
+          <div class="bk bn"><div class="bh">Note</div><div class="bb">SECONDS_BETWEEN returns an INTEGER (total seconds). Dividing by 3600.0 (a float literal) forces decimal arithmetic. Wrapping in CAST ensures the correct output precision.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">03</div>
+      <div>
+        <h3 class="it">DATEADD does not exist — use ADD_DAYS / ADD_MONTHS / ADD_YEARS</h3>
+        <p class="im">Exasol has no DATEADD function. Date arithmetic uses discrete ADD_DAYS, ADD_MONTHS, ADD_YEARS functions.</p>
+        <div class="tgs"><span class="ts">SKILL FILE</span><span class="tg tf">mart_ai_maintenance_queue.sql</span><span class="tg tf">factory_ai_agent.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried (SQL Server / Snowflake style)</div><div class="bb">DATEADD('DAY', -7, shift_date)</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">function or script DATEADD not found</div></div>
+          <div class="bk bfx"><div class="bh">Fix</div><div class="bb">ADD_DAYS(shift_date, -7)</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">04</div>
+      <div>
+        <h3 class="it">Window function inside an aggregate expression is not allowed</h3>
+        <p class="im">MAX(...) OVER () nested inside AVG(CASE WHEN ...) fails. The window result must be pre-computed in a separate CTE.</p>
+        <div class="tgs"><span class="tg tf">mart_ai_maintenance_queue.sql</span><span class="tg tf">factory_ai_agent.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — window inside aggregate</div><div class="bb">SELECT machine_id,
+    AVG(CASE WHEN shift_date >= ADD_DAYS(MAX(shift_date) OVER (), -7)
+             THEN oee END) AS oee_last_7d
+FROM MARTS.MART_OEE_DAILY
+GROUP BY machine_id</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">Analytic function not allowed here</div></div>
+          <div class="bk bfx"><div class="bh">Fix — split into two CTEs</div><div class="bb">WITH oee_max_date AS (
+    SELECT machine_id, MAX(shift_date) AS max_date
+    FROM MARTS.MART_OEE_DAILY GROUP BY machine_id
+),
+oee_window AS (
+    SELECT o.machine_id,
+        AVG(CASE WHEN o.shift_date >= ADD_DAYS(d.max_date, -7)
+                 THEN o.oee END) AS oee_last_7d
+    FROM MARTS.MART_OEE_DAILY o
+    JOIN oee_max_date d ON o.machine_id = d.machine_id
+    GROUP BY o.machine_id
+)</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────── -->
+<!-- B · PYEXASOL PYTHON API                          -->
+<!-- ───────────────────────────────────────────────── -->
+<section class="cs">
+  <div class="ct" aria-hidden="true"><span class="cl">pyexasol Python API</span></div>
+  <div class="cb">
+    <div class="chr"><span class="ctt">pyexasol Python API</span><span class="cc">6 issues · #05 – #10</span></div>
+
+    <div class="is">
+      <div class="in">05</div>
+      <div>
+        <h3 class="it">Default fetchall() returns tuples — dict access requires fetch_dict=True at connect time</h3>
+        <p class="im">Unlike psycopg2's RealDictCursor, row format is not per-query in pyexasol. It must be set at connection creation.</p>
+        <div class="tgs"><span class="tg tf">setup_ai_tables.py</span><span class="tg tf">factory_ai_agent.py</span><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried</div><div class="bb">con = pyexasol.connect(dsn=..., user=..., password=...)
+row = con.execute("SELECT machine_id FROM ...").fetchone()
+print(row["machine_id"])   # dict-style access</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">TypeError: tuple indices must be integers or slices, not str</div></div>
+          <div class="bk bfx"><div class="bh">Fix</div><div class="bb">con = pyexasol.connect(
+    dsn=..., user=..., password=...,
+    websocket_sslopt={"cert_reqs": 0},
+    fetch_dict=True   # must be set here, not per-query
+)</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">06</div>
+      <div>
+        <h3 class="it">All column names in dict rows are UPPERCASE regardless of SQL alias casing</h3>
+        <p class="im">Even aliases written in lowercase (AS event_date) come back as EVENT_DATE. Affects every dict key access in the codebase.</p>
+        <div class="tgs"><span class="tg tf">setup_ai_tables.py</span><span class="tg tf">factory_ai_agent.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — lowercase keys after enabling fetch_dict</div><div class="bb">row["machine_id"]   # KeyError
+row["avg_temp_c"]   # KeyError
+# Actual keys: ['MACHINE_ID', 'AVG_TEMP_C', 'MAX_TEMP_C', ...]</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">KeyError: 'machine_id'</div></div>
+          <div class="bk bfx"><div class="bh">Fix — normalize to lowercase at fetch time</div><div class="bb">rows = con.execute("SELECT machine_id, avg_temp_c FROM ...").fetchall()
+rows = [{k.lower(): v for k, v in r.items()} for r in rows]
+# Now row["machine_id"] works as written</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">07</div>
+      <div>
+        <h3 class="it">import_from_iterable table argument must be a (schema, table) tuple — not a dotted string</h3>
+        <p class="im">pyexasol validates identifiers strictly. A dot-separated string is rejected as unsafe.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span><span class="tg tf">setup_ai_tables.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried</div><div class="bb">con.import_from_iterable(data, "IOT_RAW.SENSOR_READINGS")</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">Value [IOT_RAW.SENSOR_READINGS] is not a safe identifier</div></div>
+          <div class="bk bfx"><div class="bh">Fix</div><div class="bb">con.import_from_iterable(data, ("IOT_RAW", "SENSOR_READINGS"))</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">08</div>
+      <div>
+        <h3 class="it">import_from_iterable does not support a 'columns' keyword argument in this version</h3>
+        <p class="im">The parameter appears in some versions of the pyexasol docs but is absent in the installed version. Workaround: remove IDENTITY from PK, supply IDs from Python.</p>
+        <div class="tgs"><span class="tg tf">setup_ai_tables.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried</div><div class="bb">con.import_from_iterable(
+    batch,
+    ("AI_SCHEMA", "FAILURE_PATTERNS"),
+    columns=["machine_id", "machine_type", ...]  # skip IDENTITY col
+)</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">ExaConnection.import_from_iterable() got an unexpected keyword argument 'columns'</div></div>
+          <div class="bk bfx"><div class="bh">Fix — remove IDENTITY, include PK from enumerate()</div><div class="bb">-- DDL: plain INT, no IDENTITY
+CREATE TABLE AI_SCHEMA.FAILURE_PATTERNS (
+    pattern_id  INT  PRIMARY KEY,  -- not INT IDENTITY
+    ...
+)
+
+-- Python: assign IDs from enumerate
+for pid, row in enumerate(rows, start=1):
+    batch.append((pid, row["machine_id"], row["machine_type"], ...))
+
+con.import_from_iterable(batch, ("AI_SCHEMA", "FAILURE_PATTERNS"))</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">09</div>
+      <div>
+        <h3 class="it">import_from_iterable hangs indefinitely when the target table has an IDENTITY column</h3>
+        <p class="im">No error is thrown — the call simply never returns. Happens when the data tuple omits the IDENTITY column. Must kill the process.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Situation</div><div class="bb">-- Table with IDENTITY PK
+CREATE TABLE IOT_RAW.DOWNTIME_EVENTS (
+    event_id  INT IDENTITY PRIMARY KEY,
+    machine_id INT, started_at TIMESTAMP, ...
+)
+-- Inserting rows that omit event_id</div></div>
+          <div class="bk be"><div class="bh">Behavior</div><div class="bb">No error. import_from_iterable() never returns. Process must be killed manually.</div></div>
+          <div class="bk bfx"><div class="bh">Fix — same as #08: remove IDENTITY, assign IDs in Python</div><div class="bb">rows_with_id = [
+    (i, machine_id, started_at, ended_at, reason_code)
+    for i, (machine_id, started_at, ended_at, reason_code)
+    in enumerate(source_rows, 1)
+]
+con.import_from_iterable(rows_with_id, ("IOT_RAW", "DOWNTIME_EVENTS"))</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">10</div>
+      <div>
+        <h3 class="it">execute() params must be a dict — ? placeholders are not supported</h3>
+        <p class="im">pyexasol uses Python's string.Formatter internally. Passing a tuple raises TypeError. The format uses {name} or {name!Q} style, not ? or %s.</p>
+        <div class="tgs"><span class="tg tf">factory_ai_agent.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — DBAPI-style ? with tuple</div><div class="bb">con.execute(
+    "INSERT INTO t (a, b, c) VALUES (?, ?, ?)",
+    (val_a, val_b, val_c)
+)</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">TypeError: string.Formatter.format() argument after ** must be a mapping, not tuple</div></div>
+          <div class="bk bfx"><div class="bh">Fix — f-string with manual quote-escaping</div><div class="bb">def _sql_str(s):
+    return "'" + str(s or "").replace("'", "''") + "'"
+
+con.execute(f"""
+    INSERT INTO AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS (machine_id, machine_name, ...)
+    VALUES ({int(machine["machine_id"])}, {_sql_str(machine["machine_name"])}, ...)
+""")</div></div>
+          <div class="bk bn"><div class="bh">Note</div><div class="bb">pyexasol's native parameterization uses {name!Q} (quoted string) and {name!i} (identifier). That was not used here due to uncertainty about the conversion behavior in this version — f-string with explicit escaping is unambiguous.</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────── -->
+<!-- C · VIRTUAL SCHEMA & NETWORKING                  -->
+<!-- ───────────────────────────────────────────────── -->
+<section class="cs">
+  <div class="ct" aria-hidden="true"><span class="cl">Virtual Schema &amp; Networking</span></div>
+  <div class="cb">
+    <div class="chr"><span class="ctt">Virtual Schema &amp; Networking</span><span class="cc">5 issues · #11 – #15</span></div>
+
+    <div class="is">
+      <div class="in">11</div>
+      <div>
+        <h3 class="it">Exasol's internal JVM cannot resolve Docker service names</h3>
+        <p class="im">When Exasol creates a JDBC connection outward to another container, the JVM process runs in an isolated network context that does not participate in Docker's embedded DNS.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried</div><div class="bb">jdbc:postgresql://mfg_postgres:5432/manufacturing_erp</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">java.net.UnknownHostException: mfg_postgres</div></div>
+          <div class="bk bfx"><div class="bh">Fix — detect container IP at setup time via docker inspect</div><div class="bb">import subprocess
+r = subprocess.run(
+    ["docker", "inspect", "mfg_postgres",
+     "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+    capture_output=True, text=True
+)
+pg_ip = r.stdout.strip()   # e.g. "172.25.0.3"
+# Connection string: jdbc:postgresql://172.25.0.3:5432/manufacturing_erp</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">12</div>
+      <div>
+        <h3 class="it">host.docker.internal is also unresolvable from inside the Exasol JVM</h3>
+        <p class="im">Docker injects the host alias into the container's /etc/hosts, but the Exasol JVM may not inherit the same file. Same fix as #11 — use IP from docker inspect.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried</div><div class="bb">jdbc:postgresql://host.docker.internal:5432/manufacturing_erp</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">java.net.UnknownHostException: host.docker.internal</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">13</div>
+      <div>
+        <h3 class="it">ETL-1014: JDBC driver registration requires settings.cfg in drivers/jdbc/ — not BucketFS root</h3>
+        <p class="im">Exasol's ETL framework scans a specific subpath for driver metadata. A JAR at the root is visible to scripts but not registered as a JDBC driver for Virtual Schema use.</p>
+        <div class="tgs"><span class="ts">SKILL FILE</span><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — JAR in BucketFS root, no settings.cfg</div><div class="bb">curl -k -X PUT https://w:PASS@localhost:2581/default/postgresql-42.7.3.jar -T pg.jar</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">ETL-1014: No default DRIVER registered for connection string starting with jdbc:postgresql:</div></div>
+          <div class="bk bfx"><div class="bh">Fix — upload both to drivers/jdbc/ subpath</div><div class="bb"># settings.cfg content (exact format required):
+DRIVERNAME=POSTGRES_JDBC_DRIVER
+JAR=postgresql-42.7.3.jar
+DRIVERMAIN=org.postgresql.Driver
+PREFIX=jdbc:postgresql:
+FETCHSIZE=100000
+INSERTSIZE=-1
+
+# Upload paths:
+curl -k -X PUT https://w:PASS@localhost:2581/default/drivers/jdbc/postgresql-42.7.3.jar -T pg.jar
+curl -k -X PUT https://w:PASS@localhost:2581/default/drivers/jdbc/settings.cfg -T settings.cfg</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">14</div>
+      <div>
+        <h3 class="it">CREATE JAVA ADAPTER SCRIPT must end with / on its own line</h3>
+        <p class="im">Exasol uses a non-standard block terminator for script DDL. Omitting it or embedding it inline on the last content line causes a parse error at EOF.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — no terminator</div><div class="bb">con.execute("""
+    CREATE OR REPLACE JAVA ADAPTER SCRIPT ADAPTER_SCRIPTS.JDBC_ADAPTER AS
+        %scriptclass com.exasol.adapter.RequestDispatcher;
+        %jar /buckets/bfsdefault/default/adapter.jar;
+        %jar /buckets/bfsdefault/default/drivers/jdbc/postgresql.jar;
+""")</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">Unexpected '&lt;eof&gt;'</div></div>
+          <div class="bk bfx"><div class="bh">Fix — / as the final line of the string</div><div class="bb">con.execute("""
+    CREATE OR REPLACE JAVA ADAPTER SCRIPT ADAPTER_SCRIPTS.JDBC_ADAPTER AS
+        %scriptclass com.exasol.adapter.RequestDispatcher;
+        %jar /buckets/bfsdefault/default/adapter.jar;
+        %jar /buckets/bfsdefault/default/drivers/jdbc/postgresql.jar;
+/""")</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">15</div>
+      <div>
+        <h3 class="it">CREATE VIRTUAL SCHEMA requires CATALOG_NAME to target the correct PostgreSQL database</h3>
+        <p class="im">Without CATALOG_NAME, the virtual schema connects to PostgreSQL's default database instead of the intended one, and may surface no tables.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bfx"><div class="bh">Required WITH clause</div><div class="bb">CREATE VIRTUAL SCHEMA ERP_PG
+USING ADAPTER_SCRIPTS.JDBC_ADAPTER
+WITH
+  CONNECTION_NAME = 'POSTGRES_CONN'
+  CATALOG_NAME    = 'manufacturing_erp'  -- PostgreSQL database name
+  SCHEMA_NAME     = 'public'</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────── -->
+<!-- D · BUCKETFS UPLOAD                              -->
+<!-- ───────────────────────────────────────────────── -->
+<section class="cs">
+  <div class="ct" aria-hidden="true"><span class="cl">BucketFS Upload</span></div>
+  <div class="cb">
+    <div class="chr"><span class="ctt">BucketFS Upload</span><span class="cc">2 issues · #16 – #17</span></div>
+
+    <div class="is">
+      <div class="in">16</div>
+      <div>
+        <h3 class="it">JDBC JAR at BucketFS root does not satisfy driver registration — must be in drivers/jdbc/</h3>
+        <p class="im">The ETL framework only scans the drivers/jdbc/ subdirectory. Root-level JARs are accessible in script %jar paths but are invisible to the JDBC driver registry.</p>
+        <div class="tgs"><span class="tg tf">setup_exasol.py</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — root upload</div><div class="bb">curl -k -X PUT https://w:PASS@localhost:2581/default/postgresql-42.7.3.jar -T file.jar
+# Script path: /buckets/bfsdefault/default/postgresql-42.7.3.jar</div></div>
+          <div class="bk be"><div class="bh">Result</div><div class="bb">ETL-1014 on Virtual Schema query (driver not found despite JAR being present)</div></div>
+          <div class="bk bfx"><div class="bh">Fix</div><div class="bb">curl -k -X PUT https://w:PASS@localhost:2581/default/drivers/jdbc/postgresql-42.7.3.jar -T file.jar
+# Script path: /buckets/bfsdefault/default/drivers/jdbc/postgresql-42.7.3.jar</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">17</div>
+      <div>
+        <h3 class="it">exapump config silently fails without an explicit 'user' field</h3>
+        <p class="im">~/.exapump/config.toml requires user = "w" alongside the password. Omitting it produces no clear error — uploads silently fail authentication.</p>
+        <div class="tgs"><span class="tg tf">~/.exapump/config.toml</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — config without user</div><div class="bb">[bfsdefault_default]
+write_password = "z6VVpLaC1SE..."
+read_password  = "sLF4wZad4nW..."</div></div>
+          <div class="bk bfx"><div class="bh">Fix</div><div class="bb">[bfsdefault_default]
+user           = "w"                  # required
+write_password = "z6VVpLaC1SE..."
+read_password  = "sLF4wZad4nW..."</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────── -->
+<!-- E · DBT / TOOLCHAIN                              -->
+<!-- ───────────────────────────────────────────────── -->
+<section class="cs">
+  <div class="ct" aria-hidden="true"><span class="cl">dbt / Toolchain</span></div>
+  <div class="cb">
+    <div class="chr"><span class="ctt">dbt / Toolchain</span><span class="cc">2 issues · #18 – #19</span></div>
+
+    <div class="is">
+      <div class="in">18</div>
+      <div>
+        <h3 class="it">dbt-fusion does not support community adapters including dbt-exasol</h3>
+        <p class="im">dbt-fusion is a Rust rewrite of dbt-core, currently supporting only a subset of adapters. The default dbt binary on this machine was dbt-fusion. The dbt-core binary (installed via pip) must be used explicitly.</p>
+        <div class="tgs"><span class="tg tf">Makefile</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Tried — default dbt command</div><div class="bb">dbt run --project-dir dbt_project</div></div>
+          <div class="bk be"><div class="bh">Error</div><div class="bb">dbt-fusion does not support exasol adapter</div></div>
+          <div class="bk bfx"><div class="bh">Fix — invoke dbt-core executable directly</div><div class="bb">$PY_SCRIPTS\dbt.exe run --project-dir dbt_project --profiles-dir $env:USERPROFILE\.dbt
+# Full path on this machine:
+# C:\Users\saga\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\
+#   LocalCache\local-packages\Python312\Scripts\dbt.exe</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="is">
+      <div class="in">19</div>
+      <div>
+        <h3 class="it">dbt prefixes all schema names with target.schema unless a generate_schema_name macro is added</h3>
+        <p class="im">Default dbt behavior: a model in schema STAGING becomes DBT_MFG_STAGING. The macro overrides this to use the custom_schema_name verbatim.</p>
+        <div class="tgs"><span class="tg tf">macros/generate_schema_name.sql</span></div>
+        <div class="bks">
+          <div class="bk bt"><div class="bh">Default behavior</div><div class="bb">-- dbt_project.yml:  schema: STAGING
+-- Actual schema created: DBT_MFG_STAGING  (target.schema prepended)</div></div>
+          <div class="bk bfx"><div class="bh">Fix — macros/generate_schema_name.sql</div><div class="bb">{% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- if custom_schema_name is none -%}
+        {{ target.schema | trim | upper }}
+    {%- else -%}
+        {{ custom_schema_name | trim | upper }}
+    {%- endif -%}
+{%- endmacro %}</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ───────────────────────────────────────────────── -->
+<!-- F · WINDOWS / RUNTIME                            -->
+<!-- ───────────────────────────────────────────────── -->
+<section class="cs">
+  <div class="ct" aria-hidden="true"><span class="cl">Windows / Runtime</span></div>
+  <div class="cb">
+    <div class="chr"><span class="ctt">Windows / Runtime</span><span class="cc">1 issue · #20</span></div>
+
+    <div class="is">
+      <div class="in">20</div>
+      <div>
+        <h3 class="it">Unicode characters in print() crash the process on Windows PowerShell with cp1252 encoding</h3>
+        <p class="im">Box-drawing characters (──), em dashes (—), and degree signs (°) written in Python string literals raise UnicodeEncodeError when stdout is bound to the Windows default cp1252 codepage.</p>
+        <div class="tgs"><span class="tg tf">factory_ai_agent.py</span></div>
+        <div class="bks">
+          <div class="bk be"><div class="bh">Error</div><div class="bb">UnicodeEncodeError: 'charmap' codec can't encode characters in position 2-3: character maps to &lt;undefined&gt;</div></div>
+          <div class="bk bfx"><div class="bh">Fix — reconfigure stdout at script start</div><div class="bb">import sys
+# Near the top of any script that prints Unicode
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# Or, before running from PowerShell:
+# $env:PYTHONIOENCODING = "utf-8"</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+</div>

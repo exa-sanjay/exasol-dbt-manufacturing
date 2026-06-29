@@ -1,0 +1,23 @@
+[exasol]
+host     = localhost
+port     = 8563
+user     = sys
+password = exasol
+
+[bucketfs]
+host           = localhost
+port           = 2581
+bucket         = default
+# Copy BucketFS passwords from the running container:
+#   python scripts/setup_exasol.py   (auto-detects and writes these for you)
+write_password = REPLACE_ME
+read_password  = REPLACE_ME
+
+[postgres]
+# Exasol JVM uses the container IP, not Docker hostname.
+# Use _auto_detect_ to have setup_exasol.py resolve it automatically.
+host     = _auto_detect_
+port     = 5432
+database = manufacturing_erp
+user     = erp_user
+password = erp_password

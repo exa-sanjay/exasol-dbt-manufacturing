@@ -1,0 +1,52 @@
+version: 2
+
+models:
+  - name: int_availability
+    description: >
+      Availability rate per machine per day.
+      Planned time minus IoT-detected downtime, expressed as a ratio.
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: shift_date
+        tests: [not_null]
+      - name: planned_time_hrs
+        tests: [not_null]
+      - name: availability_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+
+  - name: int_performance
+    description: >
+      Performance rate per machine per day.
+      Actual output versus theoretical maximum at full speed.
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: shift_date
+        tests: [not_null]
+      - name: performance_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+
+  - name: int_quality
+    description: >
+      Quality rate per machine per day.
+      Good units (actual minus defective) over total units produced.
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: shift_date
+        tests: [not_null]
+      - name: quality_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1

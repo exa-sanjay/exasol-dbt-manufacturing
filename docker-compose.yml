@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: mfg_postgres
+    environment:
+      POSTGRES_DB: manufacturing_erp
+      POSTGRES_USER: erp_user
+      POSTGRES_PASSWORD: erp_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/seed_postgres.sql:/docker-entrypoint-initdb.d/01_seed_postgres.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp_user -d manufacturing_erp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  exasol:
+    image: exasol/docker-db:latest
+    container_name: mfg_exasol
+    privileged: true
+    ports:
+      - "8563:8563"
+      - "2581:2581"
+    volumes:
+      - exasol_data:/exa
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import pyexasol; c=pyexasol.connect(dsn='localhost:8563',user='sys',password='exasol'); c.execute('SELECT 1'); c.close()\" 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  postgres_data:
+  exasol_data:

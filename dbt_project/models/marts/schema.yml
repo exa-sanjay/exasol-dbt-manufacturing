@@ -1,0 +1,82 @@
+version: 2
+
+models:
+  - name: mart_oee_daily
+    description: >
+      Primary OEE fact table — one row per machine per day.
+      OEE = Availability × Performance × Quality.
+      All three component rates and the composite OEE are guaranteed to be in [0, 1].
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: shift_date
+        tests: [not_null]
+      - name: availability_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: performance_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: quality_rate
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: oee
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+
+  - name: mart_machine_health
+    description: >
+      Daily sensor health summary per machine.
+      Includes average/max readings for temperature, vibration, and power,
+      plus an anomaly flag that fires when peaks deviate significantly from the day mean.
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: reading_date
+        tests: [not_null]
+      - name: anomaly_flag
+        tests: [not_null]
+
+  - name: mart_ai_maintenance_queue
+    description: >
+      AI-augmented maintenance queue. Surfaces at-risk machines (anomaly flag or
+      declining 7-day OEE trend) alongside Ollama-generated root cause analysis and
+      maintenance recommendations. AI output is written by factory_ai_agent.py and
+      joins into this mart as a first-class data source — visible in the dbt lineage graph.
+      Rows are ordered by urgency_tier (CRITICAL → HIGH → MEDIUM → LOW).
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: urgency_tier
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
+
+  - name: mart_production_summary
+    description: >
+      Weekly roll-up of OEE components per machine and production line.
+      Useful for trend charts and management dashboards.
+    columns:
+      - name: machine_id
+        tests: [not_null]
+      - name: week_start
+        tests: [not_null]
+      - name: avg_oee
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1

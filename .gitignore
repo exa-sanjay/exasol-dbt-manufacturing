@@ -1,0 +1,25 @@
+# Secrets / local config
+.env
+scripts/settings.cfg
+
+# dbt artifacts
+dbt_project/target/
+dbt_project/logs/
+dbt_project/dbt_packages/
+
+# Python
+*.pyc
+__pycache__/
+
+# Data — downloaded automatically on first run
+scripts/uci_ai4i2020.csv
+
+# Dagster temporary home directories
+.tmp_dagster_home_*/
+
+# Claude session data
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

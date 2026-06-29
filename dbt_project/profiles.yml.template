@@ -1,0 +1,16 @@
+# Copy this file to ~/.dbt/profiles.yml or dbt_project/profiles.yml
+# and fill in your Exasol connection details.
+
+manufacturing_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: exasol
+      threads: 4
+      # Exasol DSN — host:port
+      dsn: "localhost:8563"
+      user: sys
+      password: exasol
+      # The database/schema where DBT will create its models
+      dbname: DBT_MFG
+      schema: DBT_MFG

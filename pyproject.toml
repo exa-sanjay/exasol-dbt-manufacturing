@@ -1,0 +1,3 @@
+[tool.dagster]
+module_name = "orchestration"
+code_location_name = "manufacturing_analytics"
