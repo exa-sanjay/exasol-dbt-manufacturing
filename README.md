@@ -69,7 +69,7 @@
 **Clone the repo:**
 
 ```bash
-git clone https://github.com/SanjayG-Data/exasol-dbt-manufacturing.git
+git clone https://github.com/exa-sanjay/exasol-dbt-manufacturing.git
 cd exasol-dbt-manufacturing
 ```
 
