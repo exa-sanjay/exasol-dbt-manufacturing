@@ -6,6 +6,9 @@ models:
       Primary OEE fact table — one row per machine per day.
       OEE = Availability × Performance × Quality.
       All three component rates and the composite OEE are guaranteed to be in [0, 1].
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [machine_id, shift_date]
     columns:
       - name: machine_id
         tests: [not_null]
@@ -41,6 +44,10 @@ models:
       Daily sensor health summary per machine.
       Includes average/max readings for temperature, vibration, and power,
       plus an anomaly flag that fires when peaks deviate significantly from the day mean.
+      Thresholds configurable via dbt vars temp_anomaly_ratio / vib_anomaly_ratio.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [machine_id, reading_date]
     columns:
       - name: machine_id
         tests: [not_null]

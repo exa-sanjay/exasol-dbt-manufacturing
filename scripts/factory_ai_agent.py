@@ -2,18 +2,18 @@
 
 Pipeline per run:
   1. Query Exasol for at-risk machines (anomaly flag OR declining 7-day OEE trend).
-  2. Build a 6D feature vector for each machine's current sensor state.
-  3. Run cosine similarity SQL against AI_SCHEMA.FAILURE_PATTERNS (Exasol as vector store)
-     to find the top-3 most similar historical failure incidents.
-  4. Call the local Ollama LLM (qwen2.5:0.5b) with machine context + similar failures
+  2. Build a natural-language description of each machine's current sensor state.
+  3. Call Ollama (nomic-embed-text) to embed that description into a 768-dimensional vector.
+  4. Fetch all stored failure pattern embeddings from AI_SCHEMA.FAILURE_PATTERNS (Exasol),
+     rank by cosine similarity in Python (numpy), return the top-3 most similar events.
+  5. Call the local Ollama LLM (qwen2.5:7b) with machine context + similar failures
      and ask for a JSON root cause analysis + maintenance recommendation.
-  5. INSERT the structured result into AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS.
+  6. INSERT the structured result into AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS.
 
 Everything runs locally — no cloud API, no API key required.
 """
 
 import json
-import math
 import os
 import sys
 import time
@@ -22,23 +22,21 @@ import time
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+import numpy as np
 import pyexasol
 import requests
 
-# --Config ────────────────────────────────────────────────────────────────────
+from ai_constants import EMBED_MODEL
+
+# ── Config ───────────────────────────────────────────────────────────────────
 EXA_DSN      = os.environ.get("EXASOL_HOST", "localhost") + ":" + os.environ.get("EXASOL_PORT", "8563")
 EXA_USER     = os.environ.get("EXASOL_USER", "sys")
 EXA_PASSWORD = os.environ.get("EXASOL_PASSWORD", "exasol")
 OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = "qwen2.5:7b"
 
-MACHINE_TYPE_CODES = {
-    "CNC_MILL": 1, "LATHE": 2, "WELDING_ROBOT": 3,
-    "ASSEMBLY_BOT": 4, "INJECTION_MOLD": 5, "QUALITY_SCANNER": 6,
-}
 
-
-# --Step 1: Find at-risk machines ─────────────────────────────────────────────
+# ── Step 1: Find at-risk machines ────────────────────────────────────────────
 
 def get_at_risk_machines(con):
     """Return machines with an active anomaly OR declining 7-day OEE trend."""
@@ -61,8 +59,6 @@ def get_at_risk_machines(con):
             GROUP BY o.machine_id
         ),
         health_window AS (
-            -- Aggregate over the 7 days up to max(reading_date) so live inserts
-            -- don't push historical anomalies out of scope
             SELECT
                 machine_id,
                 MAX(reading_date)         AS reading_date,
@@ -110,99 +106,102 @@ def get_at_risk_machines(con):
     return [{k.lower(): v for k, v in r.items()} for r in rows]
 
 
-# --Step 2: Build feature vector ──────────────────────────────────────────────
+# ── Step 2 + 3: Build description and embed ──────────────────────────────────
 
-def compute_machine_baselines(con):
+def _f(val, default=0.0):
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def build_machine_description(machine: dict) -> str:
+    """Build a natural-language description of the current at-risk machine state."""
+    mtype = (machine["machine_type"] or "UNKNOWN").upper().strip()
+    return (
+        f"Machine type: {mtype}\n"
+        f"Current anomaly detected\n"
+        f"Sensor readings (recent 7-day window):\n"
+        f"  Temperature: max {_f(machine['max_temp_c']):.1f}°C, average {_f(machine['avg_temp_c']):.1f}°C\n"
+        f"  Vibration: max {_f(machine['max_vibration_mm_s']):.3f} mm/s, average {_f(machine['avg_vibration_mm_s']):.3f} mm/s\n"
+        f"  Power: max {_f(machine['max_power_kw']):.2f} kW, average {_f(machine['avg_power_kw']):.2f} kW\n"
+        f"7-day OEE: {_f(machine['oee_last_7d']):.1%}"
+    )
+
+
+def get_embedding(text: str) -> list:
+    """Call Ollama embedding API with nomic-embed-text, return list of floats."""
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/embed",
+            json={"model": EMBED_MODEL, "input": text},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["embeddings"][0]
+    except requests.exceptions.ConnectionError:
+        print(f"    WARNING: Cannot reach Ollama at {OLLAMA_URL} for embedding.")
+        return []
+    except Exception as e:
+        print(f"    WARNING: Embedding call failed: {e}")
+        return []
+
+
+# ── Step 4: Cosine similarity search ────────────────────────────────────────
+
+def find_similar_failures(con, query_embedding: list) -> list:
+    """Fetch all stored embeddings from Exasol, rank by cosine similarity in Python.
+
+    Embeddings live in Exasol; similarity math runs in numpy on the host.
+    At ~241 patterns × 768 dims the fetch is <1 MB, so no in-database UDF needed.
+    """
     rows = con.execute("""
-        SELECT machine_id,
-               AVG(temperature_c)     AS mean_temp,  STDDEV_POP(temperature_c)     AS std_temp,
-               AVG(vibration_mm_s)    AS mean_vib,   STDDEV_POP(vibration_mm_s)    AS std_vib,
-               AVG(power_kw)          AS mean_pwr,   STDDEV_POP(power_kw)          AS std_pwr
-        FROM IOT_RAW.SENSOR_READINGS
-        GROUP BY machine_id
-    """).fetchall()
-    rows = [{k.lower(): v for k, v in r.items()} for r in rows]
-    return {r["machine_id"]: r for r in rows}
-
-
-def safe_z(value, mean, std):
-    if std is None or float(std) == 0:
-        return 0.0
-    return (float(value) - float(mean)) / float(std)
-
-
-def build_query_vector(machine, baselines):
-    mid  = machine["machine_id"]
-    bl   = baselines.get(mid, {})
-    mtype = (machine["machine_type"] or "").upper().strip()
-
-    v1 = float(MACHINE_TYPE_CODES.get(mtype, 0))
-    v2 = safe_z(machine["max_temp_c"],        bl.get("mean_temp"), bl.get("std_temp"))
-    v3 = safe_z(machine["max_vibration_mm_s"],bl.get("mean_vib"),  bl.get("std_vib"))
-    v4 = safe_z(machine["max_power_kw"],      bl.get("mean_pwr"),  bl.get("std_pwr"))
-    v5 = max(0.0, 1.0 - float(machine["oee_last_7d"] or 0.7))
-    v6 = 1.0  # placeholder — current event duration unknown, use neutral value
-
-    norm = math.sqrt(v1**2 + v2**2 + v3**2 + v4**2 + v5**2 + v6**2)
-    return (v1, v2, v3, v4, v5, v6, norm if norm > 0 else 1.0)
-
-
-# --Step 3: Cosine similarity search in Exasol ────────────────────────────────
-
-def find_similar_failures(con, query_vector):
-    """Run cosine similarity SQL inside Exasol against FAILURE_PATTERNS.
-
-    The entire vector math runs inside Exasol — no data leaves the database.
-    This is the 'Exasol as vector store' demo moment.
-    """
-    q1, q2, q3, q4, q5, q6, qnorm = [float(v) for v in query_vector]
-
-    sql = f"""
-        SELECT
-            pattern_id,
-            machine_type,
-            CAST(event_date AS VARCHAR(20)) AS event_date,
-            reason_code,
-            v_downtime_hrs,
-            CAST(
-                ({q1} * v_machine_type +
-                 {q2} * v_temp_zscore  +
-                 {q3} * v_vib_zscore   +
-                 {q4} * v_pwr_zscore   +
-                 {q5} * v_oee_drop     +
-                 {q6} * v_downtime_hrs)
-                / NULLIF({qnorm} * vector_norm, 0)
-            AS DECIMAL(8,6)) AS similarity
+        SELECT pattern_id, machine_type,
+               CAST(event_date AS VARCHAR(20)) AS event_date,
+               reason_code, downtime_hrs, embedding
         FROM AI_SCHEMA.FAILURE_PATTERNS
-        ORDER BY similarity DESC
-        LIMIT 3
-    """
-    rows = con.execute(sql).fetchall()
-    return [{k.lower(): v for k, v in r.items()} for r in rows]
+    """).fetchall()
+
+    if not rows or not query_embedding:
+        return []
+
+    q      = np.array(query_embedding, dtype=float)
+    q_norm = float(np.linalg.norm(q))
+
+    scored = []
+    for row in rows:
+        d        = {k.lower(): v for k, v in row.items()}
+        emb      = np.fromstring(d["embedding"], dtype=float, sep=",")
+        emb_norm = float(np.linalg.norm(emb))
+        sim      = float(np.dot(q, emb) / (q_norm * emb_norm)) if q_norm > 0 and emb_norm > 0 else 0.0
+        scored.append({**d, "similarity": sim})
+
+    scored.sort(key=lambda x: x["similarity"], reverse=True)
+    return scored[:3]
 
 
-# --Step 4: Call local Ollama LLM ─────────────────────────────────────────────
+# ── Step 5: Call local Ollama LLM ────────────────────────────────────────────
 
 def call_ollama(machine, similar_failures, anomaly_score):
     failures_text = ""
     for i, f in enumerate(similar_failures, 1):
-        sim_pct = float(f["similarity"] or 0) * 100
+        sim_pct = f["similarity"] * 100
         failures_text += (
             f"  {i}. {f['reason_code']} on {f['event_date']} "
-            f"({f['machine_type']}, {float(f['v_downtime_hrs']):.1f}h downtime, "
-            f"{sim_pct:.0f}% pattern match)\n"
+            f"({f['machine_type']}, {_f(f['downtime_hrs']):.1f}h downtime, "
+            f"{sim_pct:.0f}% semantic match)\n"
         )
 
     prompt = f"""You are a predictive maintenance AI for a smart factory. Analyze the following machine data and respond with a JSON object only — no markdown, no explanation, just the JSON.
 
 Machine: {machine['machine_name']} ({machine['machine_type']}, {machine['production_line']})
-Current sensor anomaly score: {float(anomaly_score):.3f}
-7-day OEE trend: {float(machine['oee_last_7d']):.1%} (was {float(machine['oee_prior_7d']):.1%})
-Max temperature: {float(machine['max_temp_c']):.1f}°C (daily avg: {float(machine['avg_temp_c']):.1f}°C)
-Max vibration: {float(machine['max_vibration_mm_s']):.3f} mm/s (daily avg: {float(machine['avg_vibration_mm_s']):.3f} mm/s)
-Max power: {float(machine['max_power_kw']):.2f} kW (daily avg: {float(machine['avg_power_kw']):.2f} kW)
+Current sensor anomaly score: {_f(anomaly_score):.3f}
+7-day OEE trend: {_f(machine['oee_last_7d']):.1%} (was {_f(machine['oee_prior_7d']):.1%})
+Max temperature: {_f(machine['max_temp_c']):.1f}°C (daily avg: {_f(machine['avg_temp_c']):.1f}°C)
+Max vibration: {_f(machine['max_vibration_mm_s']):.3f} mm/s (daily avg: {_f(machine['avg_vibration_mm_s']):.3f} mm/s)
+Max power: {_f(machine['max_power_kw']):.2f} kW (daily avg: {_f(machine['avg_power_kw']):.2f} kW)
 
-Top 3 most similar historical failures (from Exasol vector similarity search):
+Top 3 most similar historical failures (ranked by nomic-embed-text semantic similarity):
 {failures_text if failures_text.strip() else '  No similar historical failures found.'}
 
 Respond with this exact JSON structure:
@@ -220,10 +219,10 @@ Rules:
 """
 
     payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "format": "json",
+        "model":   OLLAMA_MODEL,
+        "prompt":  prompt,
+        "stream":  False,
+        "format":  "json",
         "options": {"temperature": 0.1, "num_predict": 200},
     }
 
@@ -234,69 +233,81 @@ Rules:
             timeout=180,
         )
         resp.raise_for_status()
-        raw = resp.json().get("response", "{}")
+        body   = resp.json()
+        raw    = body.get("response", "{}")
         result = json.loads(raw)
 
-        # Validate and clamp
+        if not all(k in result for k in ("root_cause", "recommended_action",
+                                          "estimated_hours_to_failure", "confidence")):
+            raise ValueError(f"Missing required keys in LLM response: {list(result.keys())}")
+
         result["estimated_hours_to_failure"] = max(1.0, min(720.0,
-            float(result.get("estimated_hours_to_failure", 48))))
-        if result.get("confidence") not in ("HIGH", "MEDIUM", "LOW"):
+            float(result["estimated_hours_to_failure"])))
+        if result["confidence"] not in ("HIGH", "MEDIUM", "LOW"):
             result["confidence"] = "MEDIUM"
         return result
 
     except requests.exceptions.ConnectionError:
         print(f"    WARNING: Cannot connect to Ollama at {OLLAMA_URL}. Is it running?")
         return _fallback_recommendation(machine, similar_failures)
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
-        print(f"    WARNING: Ollama response parse error ({e}). Using fallback.")
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+        print(f"    WARNING: Ollama response parse/validation error ({e}). Using fallback.")
         return _fallback_recommendation(machine, similar_failures)
 
 
 def _fallback_recommendation(machine, similar_failures):
     """Rule-based fallback when Ollama is unavailable — still useful output."""
-    top = similar_failures[0] if similar_failures else {}
+    top    = similar_failures[0] if similar_failures else {}
     reason = top.get("reason_code", "UNKNOWN") if top else "UNKNOWN"
     return {
-        "root_cause": f"Pattern matches historical {reason.replace('_', ' ').lower()} events.",
-        "recommended_action": "Schedule immediate inspection of mechanical components.",
-        "estimated_hours_to_failure": float(top.get("v_downtime_hrs", 24)) * 2 if top else 24.0,
-        "confidence": "LOW",
+        "root_cause":                f"Pattern matches historical {reason.replace('_', ' ').lower()} events.",
+        "recommended_action":        "Schedule immediate inspection of mechanical components.",
+        "estimated_hours_to_failure": _f(top.get("downtime_hrs", 24)) * 2 if top else 24.0,
+        "confidence":                "LOW",
     }
 
 
-# --Step 5: Persist recommendation ────────────────────────────────────────────
-
-def _sql_str(s):
-    return "'" + str(s or "").replace("'", "''") + "'"
-
+# ── Step 6: Persist recommendation ───────────────────────────────────────────
 
 def insert_recommendation(con, machine, anomaly_score, result, similar_failures):
-    pattern_ids = [str(f["pattern_id"]) for f in similar_failures]
+    pattern_ids    = [str(f["pattern_id"]) for f in similar_failures]
     similar_ids_json = "[" + ",".join(pattern_ids) + "]"
 
-    con.execute(f"""
+    con.execute(
+        "DELETE FROM AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS "
+        "WHERE machine_id = {machine_id} AND CAST(generated_at AS DATE) = CURRENT_DATE",
+        {"machine_id": int(machine["machine_id"])},
+    )
+
+    con.execute(
+        """
         INSERT INTO AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS
             (machine_id, machine_name, anomaly_score, root_cause,
              recommended_action, estimated_hours_to_failure, confidence, similar_pattern_ids)
-        VALUES (
-            {int(machine["machine_id"])},
-            {_sql_str(machine["machine_name"])},
-            {round(float(anomaly_score), 4)},
-            {_sql_str(result.get("root_cause", "")[:1000])},
-            {_sql_str(result.get("recommended_action", "")[:1000])},
-            {float(result.get("estimated_hours_to_failure", 48.0))},
-            {_sql_str(result.get("confidence", "MEDIUM"))},
-            {_sql_str(similar_ids_json)}
-        )
-    """)
+        VALUES ({machine_id}, {machine_name}, {anomaly_score}, {root_cause},
+                {recommended_action}, {estimated_hours_to_failure}, {confidence}, {similar_pattern_ids})
+        """,
+        {
+            "machine_id":                 int(machine["machine_id"]),
+            "machine_name":               str(machine["machine_name"] or "")[:100],
+            "anomaly_score":              round(_f(anomaly_score), 4),
+            "root_cause":                 str(result.get("root_cause", ""))[:1000],
+            "recommended_action":         str(result.get("recommended_action", ""))[:1000],
+            "estimated_hours_to_failure": float(result.get("estimated_hours_to_failure", 48.0)),
+            "confidence":                 str(result.get("confidence", "MEDIUM")),
+            "similar_pattern_ids":        similar_ids_json,
+        },
+    )
 
 
-# --Main ──────────────────────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     print("\n==> Factory AI Agent starting ...")
-    print(f"    Exasol:  {EXA_DSN}")
-    print(f"    Ollama:  {OLLAMA_URL}  (model: {OLLAMA_MODEL})")
+    print(f"    Exasol:     {EXA_DSN}")
+    print(f"    Ollama:     {OLLAMA_URL}")
+    print(f"    Embed model: {EMBED_MODEL}")
+    print(f"    LLM model:   {OLLAMA_MODEL}")
 
     try:
         con = pyexasol.connect(dsn=EXA_DSN, user=EXA_USER, password=EXA_PASSWORD,
@@ -305,69 +316,63 @@ def main():
         print(f"\nERROR: Cannot connect to Exasol: {e}")
         sys.exit(1)
 
-    # Step 1
-    print("\n--Step 1: Scanning for at-risk machines ...")
-    try:
-        machines = get_at_risk_machines(con)
-    except Exception as e:
-        print(f"ERROR: {e}")
-        print("       Ensure 'make dbt-run' and 'make ai-setup' have both completed.")
-        con.close()
-        sys.exit(1)
-
-    if not machines:
-        print("    No at-risk machines found — all systems nominal.")
-        con.close()
-        return
-
-    print(f"    Found {len(machines)} at-risk machine(s):")
-    for m in machines:
-        flag = "ANOMALY" if m["anomaly_flag"] else "DECLINING OEE"
-        print(f"      - {m['machine_name']} ({flag}, OEE 7d: {float(m['oee_last_7d']):.1%})")
-
-    # Compute baselines once
-    print("\n--Step 2: Computing sensor baselines ...")
-    baselines = compute_machine_baselines(con)
-
-    # Process each machine
     recs_written = 0
-    for machine in machines:
-        name = machine["machine_name"]
-        print(f"\n-- Processing: {name} " + "-" * 40)
-
-        # Step 2: build vector
-        qvec = build_query_vector(machine, baselines)
-        print(f"    Feature vector: [{', '.join(f'{v:.3f}' for v in qvec[:6])}]  norm={qvec[6]:.3f}")
-
-        # Step 3: similarity search inside Exasol
-        print("    Running cosine similarity search in Exasol ...")
-        similar = find_similar_failures(con, qvec)
-        if similar:
-            print(f"    Top match: {similar[0]['reason_code']} "
-                  f"({float(similar[0]['similarity'] or 0)*100:.0f}% similar)")
-        else:
-            print("    No similar patterns found in vector store.")
-
-        # Step 4: call Ollama
-        print(f"    Calling Ollama ({OLLAMA_MODEL}) for root cause analysis ...")
-        t0 = time.time()
+    try:
+        print("\n-- Step 1: Scanning for at-risk machines ...")
         try:
-            result = call_ollama(machine, similar, machine["anomaly_score"])
+            machines = get_at_risk_machines(con)
         except Exception as e:
-            print(f"    WARNING: Ollama failed for {machine['machine_name']}: {e}")
-            print("    Skipping this machine.")
-            continue
-        elapsed = time.time() - t0
-        print(f"    Ollama response in {elapsed:.1f}s:")
-        print(f"      Root cause:   {result['root_cause']}")
-        print(f"      Action:       {result['recommended_action']}")
-        print(f"      Est. TTF:     {result['estimated_hours_to_failure']:.0f}h  [{result['confidence']}]")
+            print(f"ERROR: {e}")
+            print("       Ensure 'make dbt-run' and 'make ai-setup' have both completed.")
+            sys.exit(1)
 
-        # Step 5: persist
-        insert_recommendation(con, machine, machine["anomaly_score"], result, similar)
-        recs_written += 1
+        if not machines:
+            print("    No at-risk machines found — all systems nominal.")
+            return
 
-    con.close()
+        print(f"    Found {len(machines)} at-risk machine(s):")
+        for m in machines:
+            flag = "ANOMALY" if m["anomaly_flag"] else "DECLINING OEE"
+            print(f"      - {m['machine_name']} ({flag}, OEE 7d: {_f(m['oee_last_7d']):.1%})")
+
+        for machine in machines:
+            name = machine["machine_name"]
+            print(f"\n-- Processing: {name} " + "-" * 40)
+
+            print(f"    Embedding current state via {EMBED_MODEL} ...")
+            query_emb = get_embedding(build_machine_description(machine))
+            if not query_emb:
+                print(f"    ERROR: Could not get embedding for {name} — skipping.")
+                continue
+
+            print("    Searching failure patterns by cosine similarity ...")
+            similar = find_similar_failures(con, query_emb)
+            if similar:
+                top = similar[0]
+                print(f"    Top match: {top['reason_code']} "
+                      f"({top['similarity']*100:.0f}% semantic similarity)")
+            else:
+                print("    No similar patterns found in vector store.")
+
+            print(f"    Calling Ollama ({OLLAMA_MODEL}) for root cause analysis ...")
+            t0 = time.time()
+            try:
+                result = call_ollama(machine, similar, machine["anomaly_score"])
+            except Exception as e:
+                print(f"    WARNING: Ollama failed for {name}: {e}")
+                print("    Skipping this machine.")
+                continue
+            elapsed = time.time() - t0
+            print(f"    Ollama response in {elapsed:.1f}s:")
+            print(f"      Root cause:  {result['root_cause']}")
+            print(f"      Action:      {result['recommended_action']}")
+            print(f"      Est. TTF:    {result['estimated_hours_to_failure']:.0f}h  [{result['confidence']}]")
+
+            insert_recommendation(con, machine, machine["anomaly_score"], result, similar)
+            recs_written += 1
+
+    finally:
+        con.close()
 
     print(f"\n==> AI Agent complete — {recs_written} recommendation(s) written to "
           "AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS")

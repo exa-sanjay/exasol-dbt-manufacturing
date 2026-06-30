@@ -14,6 +14,7 @@
     .\run.ps1 seed-uci
     .\run.ps1 seed-uci-live
     .\run.ps1 orchestrate
+    .\run.ps1 clean-ai
     .\run.ps1 clean
     .\run.ps1 help
 #>
@@ -43,7 +44,7 @@ function Wait-Postgres {
     Write-Host "==> Waiting for PostgreSQL..."
     $max = 60; $i = 0
     while ($i -lt $max) {
-        $result = docker compose exec -T postgres pg_isready -U erp_user -d manufacturing_erp 2>&1
+        docker compose exec -T postgres pg_isready -U erp_user -d manufacturing_erp 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { Write-Host "    PostgreSQL ready."; return }
         Start-Sleep 2; $i++
     }
@@ -54,8 +55,8 @@ function Wait-Exasol {
     Write-Host "==> Waiting for Exasol (may take ~90s on first start)..."
     $max = 60; $i = 0
     while ($i -lt $max) {
-        $result = docker compose exec -T exasol python3 -c `
-            "import pyexasol; c=pyexasol.connect(dsn='localhost:8563',user='sys',password='exasol'); print('ready')" 2>&1
+        docker compose exec -T exasol python3 -c `
+            "import pyexasol; c=pyexasol.connect(dsn='localhost:8563',user='sys',password='exasol'); print('ready')" 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) { Write-Host "    Exasol ready."; return }
         Start-Sleep 5; $i++
     }
@@ -96,7 +97,7 @@ switch ($Command) {
         Write-Host "  .\run.ps1 seed          Seed data into both databases"
         Write-Host "  .\run.ps1 dbt-run       Run all dbt models"
         Write-Host "  .\run.ps1 dbt-test      Run all dbt tests"
-        Write-Host "  .\run.ps1 docs          Generate and serve dbt docs (http://localhost:8080)"
+        Write-Host "  .\run.ps1 docs          Generate and serve dbt docs (http://localhost:8082)"
         Write-Host "  .\run.ps1 clean         Stop containers and remove volumes"
         Write-Host ""
         Write-Host "  Real sensor data (UCI AI4I 2020 Predictive Maintenance dataset):"
@@ -108,7 +109,8 @@ switch ($Command) {
         Write-Host "  .\run.ps1 ai-agent      Run the Factory AI Agent"
         Write-Host ""
         Write-Host "  Orchestration:"
-        Write-Host "  .\run.ps1 orchestrate   Start Dagster UI at http://localhost:3000"
+        Write-Host "  .\run.ps1 dashboard     Start Streamlit demo dashboard at http://localhost:8501"
+  Write-Host "  .\run.ps1 orchestrate   Start Dagster UI at http://localhost:3000"
         Write-Host "                          Then enable sensor 'new_sensor_data_sensor' in the UI"
         Write-Host ""
     }
@@ -146,8 +148,21 @@ switch ($Command) {
     "docs" {
         Write-Host "==> Generating dbt docs..."
         Push-Location "$ROOT\dbt_project"
-        & $DBT docs generate
-        & $DBT docs serve --port 8081
+        & $DBT compile --write-catalog
+        # dbt-fusion dropped `dbt docs serve` — download the viewer and use Python
+        & $PYTHON -c @"
+import os, urllib.request
+idx = os.path.join('target', 'index.html')
+if not os.path.exists(idx):
+    print('    Downloading dbt docs viewer...')
+    urllib.request.urlretrieve(
+        'https://raw.githubusercontent.com/dbt-labs/dbt-core/main/core/dbt/task/docs/index.html',
+        idx
+    )
+    print('    Done.')
+"@
+        Write-Host "==> Serving dbt docs at http://localhost:8082 (Ctrl+C to stop) ..."
+        & $PYTHON -m http.server 8082 --directory target
         Pop-Location
     }
 
@@ -177,6 +192,11 @@ switch ($Command) {
         & $PYTHON "$ROOT\scripts\factory_ai_agent.py"
     }
 
+    "dashboard" {
+        Write-Host "==> Starting Streamlit dashboard at http://localhost:8501 ..."
+        & $PYTHON -m streamlit run "$ROOT\scripts\dashboard.py" --server.port 8501
+    }
+
     "orchestrate" {
         Write-Host "==> Starting Dagster UI at http://localhost:3000 ..."
         Write-Host "==> Enable sensor 'new_sensor_data_sensor' in the UI to start auto-triggering."
@@ -190,6 +210,19 @@ switch ($Command) {
         & "$PSCommandPath" dbt-run
         & "$PSCommandPath" dbt-test
         & "$PSCommandPath" docs
+    }
+
+    "clean-ai" {
+        Write-Host "==> Dropping AI_SCHEMA tables (containers stay running) ..."
+        docker compose exec -T exasol python3 -c @"
+import pyexasol
+c = pyexasol.connect(dsn='localhost:8563', user='sys', password='exasol')
+c.execute('DROP TABLE IF EXISTS AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS')
+c.execute('DROP TABLE IF EXISTS AI_SCHEMA.FAILURE_PATTERNS')
+c.execute('DROP SCHEMA IF EXISTS AI_SCHEMA')
+print('AI_SCHEMA dropped.')
+"@
+        Write-Host "==> Run '.\run.ps1 ai-setup' to rebuild from scratch."
     }
 
     "clean" {

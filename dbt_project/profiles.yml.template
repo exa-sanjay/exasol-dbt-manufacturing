@@ -1,5 +1,8 @@
-# Copy this file to ~/.dbt/profiles.yml or dbt_project/profiles.yml
-# and fill in your Exasol connection details.
+# Copy this file to ~/.dbt/profiles.yml
+#   Windows:  Copy-Item dbt_project\profiles.yml.template $HOME\.dbt\profiles.yml
+#   macOS/Linux: cp dbt_project/profiles.yml.template ~/.dbt/profiles.yml
+#
+# The default values connect to the local Docker Exasol — no edits needed for the demo.
 
 manufacturing_analytics:
   target: dev
@@ -11,6 +14,9 @@ manufacturing_analytics:
       dsn: "localhost:8563"
       user: sys
       password: exasol
-      # The database/schema where DBT will create its models
+      # NOTE: dbname/schema are the dbt *default* schema, but the generate_schema_name
+      # macro in macros/generate_schema_name.sql overrides this so each model layer lands
+      # in its own schema: STAGING, INTERMEDIATE, MARTS — not DBT_MFG.
+      # You do not need to change these values for the demo.
       dbname: DBT_MFG
       schema: DBT_MFG

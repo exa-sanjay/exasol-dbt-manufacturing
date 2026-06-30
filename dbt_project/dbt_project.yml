@@ -12,6 +12,11 @@ macro-paths:  ["macros"]
 target-path:  "target"
 clean-targets: ["target", "dbt_packages"]
 
+vars:
+  # Anomaly detection thresholds — override at run time with --vars '{"temp_anomaly_ratio": 1.20}'
+  temp_anomaly_ratio: 1.15   # fire when max_temp > avg_temp * this factor
+  vib_anomaly_ratio:  1.50   # fire when max_vibration > avg_vibration * this factor
+
 models:
   manufacturing_analytics:
     staging:

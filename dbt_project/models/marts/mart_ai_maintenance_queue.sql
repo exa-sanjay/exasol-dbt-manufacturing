@@ -25,19 +25,23 @@ oee_trend AS (
     GROUP BY o.machine_id
 ),
 
+health_max_date AS (
+    SELECT MAX(reading_date) AS max_date FROM {{ ref('mart_machine_health') }}
+),
+
 latest_health AS (
     SELECT
-        machine_id,
-        MAX(reading_date)        AS reading_date,
-        MAX(anomaly_flag)        AS anomaly_flag,
-        AVG(avg_temp_c)          AS avg_temp_c,
-        MAX(max_temp_c)          AS max_temp_c,
-        AVG(avg_vibration_mm_s)  AS avg_vibration_mm_s,
-        MAX(max_vibration_mm_s)  AS max_vibration_mm_s
-    FROM {{ ref('mart_machine_health') }}
-    WHERE reading_date >= ADD_DAYS(
-        (SELECT MAX(reading_date) FROM {{ ref('mart_machine_health') }}), -7)
-    GROUP BY machine_id
+        h.machine_id,
+        MAX(h.reading_date)        AS reading_date,
+        MAX(h.anomaly_flag)        AS anomaly_flag,
+        AVG(h.avg_temp_c)          AS avg_temp_c,
+        MAX(h.max_temp_c)          AS max_temp_c,
+        AVG(h.avg_vibration_mm_s)  AS avg_vibration_mm_s,
+        MAX(h.max_vibration_mm_s)  AS max_vibration_mm_s
+    FROM {{ ref('mart_machine_health') }} h
+    CROSS JOIN health_max_date d
+    WHERE h.reading_date >= ADD_DAYS(d.max_date, -7)
+    GROUP BY h.machine_id
 ),
 
 latest_rec AS (

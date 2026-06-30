@@ -6,3 +6,6 @@ tqdm>=4.66.0
 dagster>=1.9.0
 dagster-webserver>=1.9.0
 dagster-dbt>=0.25.0
+streamlit>=1.35.0
+plotly>=5.22.0
+pandas>=2.0.0

@@ -1,3 +1,12 @@
+{{
+    config(
+        materialized='incremental',
+        unique_key=['machine_id', 'shift_date'],
+        incremental_strategy='delete+insert',
+        on_schema_change='fail'
+    )
+}}
+
 -- OEE = Availability × Performance × Quality  per machine per day.
 -- This is the primary business-facing model — one row per machine per shift_date.
 
@@ -31,3 +40,6 @@ JOIN {{ ref('int_performance') }} p
 JOIN {{ ref('int_quality') }} q
     ON m.machine_id = q.machine_id
     AND a.shift_date = q.shift_date
+{% if is_incremental() %}
+WHERE a.shift_date >= CAST(ADD_DAYS(CURRENT_DATE, -3) AS DATE)
+{% endif %}

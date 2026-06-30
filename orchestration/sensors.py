@@ -3,7 +3,7 @@
 import os
 
 import pyexasol
-from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
+from dagster import DagsterRunStatus, RunRequest, RunsFilter, SensorEvaluationContext, SkipReason, sensor
 
 EXA_DSN      = os.environ.get("EXASOL_HOST", "localhost") + ":" + os.environ.get("EXASOL_PORT", "8563")
 EXA_USER     = os.environ.get("EXASOL_USER", "sys")
@@ -41,6 +41,17 @@ def build_new_data_sensor(job):
             return
 
         last_count = int(context.cursor or 0)
+
+        # Don't queue — wait for any in-progress run to finish first
+        active = context.instance.get_runs(
+            filters=RunsFilter(
+                job_name="manufacturing_refresh_job",
+                statuses=[DagsterRunStatus.STARTED, DagsterRunStatus.STARTING, DagsterRunStatus.QUEUED],
+            )
+        )
+        if active:
+            yield SkipReason(f"Run {active[0].run_id[:8]} still in progress. Waiting for it to finish.")
+            return
 
         if current_count > last_count:
             new_rows = current_count - last_count

@@ -113,8 +113,10 @@ def _detect_bfs_password() -> str:
         if r.returncode == 0:
             m = re.search(r"WritePasswd\s*=\s*(\S+)", r.stdout)
             if m:
+                import base64
+                decoded = base64.b64decode(m.group(1)).decode("utf-8")
                 log("Auto-detected BucketFS write password from container.")
-                return m.group(1)
+                return decoded
     except Exception:
         pass
 

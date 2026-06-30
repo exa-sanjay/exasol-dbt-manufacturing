@@ -37,12 +37,6 @@ sources:
           - name: order_id
             tests: [not_null]
 
-      - name: maintenance_schedules
-        description: "Planned and unplanned maintenance windows."
-        columns:
-          - name: schedule_id
-            tests: [unique, not_null]
-
   - name: iot
     description: >
       High-volume IoT data stored natively in Exasol
@@ -69,15 +63,15 @@ sources:
   - name: ai
     description: >
       AI_SCHEMA tables written by factory_ai_agent.py — the Self-Healing Factory AI System.
-      FAILURE_PATTERNS stores 6D feature vectors (Exasol as vector store).
+      FAILURE_PATTERNS stores nomic-embed-text embeddings (768-dimensional, via Ollama).
       MAINTENANCE_RECOMMENDATIONS stores Ollama-generated root cause analysis per at-risk machine.
     database: EXA_DB
     schema: AI_SCHEMA
     tables:
       - name: failure_patterns
         description: >
-          6-dimensional feature vector per historical downtime event.
-          Used for cosine similarity search inside Exasol (vector store pattern).
+          nomic-embed-text embedding (768-dimensional) per historical downtime event.
+          Stored in Exasol as a comma-separated VARCHAR; cosine similarity is ranked in Python (numpy).
         columns:
           - name: pattern_id
             tests: [unique, not_null]
@@ -88,8 +82,24 @@ sources:
         description: >
           AI-generated maintenance work orders — root cause, action, estimated time-to-failure.
           Written by factory_ai_agent.py using qwen2.5:7b via local Ollama.
+          Re-runs are idempotent: today's row per machine is deleted before re-insert.
         columns:
           - name: rec_id
             tests: [unique, not_null]
           - name: machine_id
             tests: [not_null]
+          - name: root_cause
+            tests: [not_null]
+          - name: recommended_action
+            tests: [not_null]
+          - name: confidence
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ['HIGH', 'MEDIUM', 'LOW']
+          - name: estimated_hours_to_failure
+            tests:
+              - not_null
+              - dbt_utils.accepted_range:
+                  min_value: 1
+                  max_value: 720

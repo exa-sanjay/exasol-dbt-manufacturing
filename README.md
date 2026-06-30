@@ -1,6 +1,29 @@
-# Exasol + dbt Manufacturing OEE Demo
+<div align="center">
 
-A self-contained demo showing how Exasol acts as the central analytics engine in a manufacturing architecture — federating ERP data from PostgreSQL and high-volume IoT sensor data, transforming both into **OEE (Overall Equipment Effectiveness)** metrics with dbt, and running a **local AI agent** that detects at-risk machines and generates maintenance recommendations — all without a cloud API.
+# 🏭 Exasol + dbt Manufacturing OEE Demo
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
+[![Docker](https://img.shields.io/badge/Docker-required-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com)
+[![dbt](https://img.shields.io/badge/dbt-1.x-FF694B?style=flat-square&logo=dbt&logoColor=white)](https://www.getdbt.com)
+[![Ollama](https://img.shields.io/badge/Ollama-local%20AI-black?style=flat-square)](https://ollama.ai)
+[![Exasol](https://img.shields.io/badge/Exasol-columnar%20DB-003580?style=flat-square)](https://www.exasol.com)
+
+**Exasol as the AI analytical engine. dbt for transformations. A local RAG AI agent that detects failing machines and generates maintenance recommendations — no cloud, no API key.**
+
+</div>
+
+---
+
+### What's inside
+
+| | |
+|---|---|
+| **10 machines** · **~260 k IoT readings** · **90 days** of sensor history | High-volume time-series data seeded into Exasol |
+| **12 dbt models** across staging → intermediate → marts | OEE, machine health, production summary, AI queue |
+| **241 failure patterns** embedded via `nomic-embed-text` (768-dim) | Exasol acting as a vector store — no Pinecone, no Chroma |
+| **`qwen2.5:7b`** generating maintenance recommendations locally | Full RAG pipeline, 100% on-laptop via Ollama |
+| **Dagster sensor** polling Exasol for new IoT data | Fully automated pipeline — no manual re-runs |
 
 ---
 
@@ -41,7 +64,7 @@ A self-contained demo showing how Exasol acts as the central analytics engine in
 | Python | 3.10+ | Use a virtual environment (recommended) |
 | Git | any | To clone the repo |
 
-**System resources:** 16 GB RAM recommended. Exasol uses ~4 GB and the AI model (`qwen2.5:7b`) uses ~8 GB during inference. Also reserve ~10 GB disk space (Docker images + model download).
+**System resources:** 16 GB RAM recommended. Exasol uses ~4 GB and the AI LLM (`qwen2.5:7b`) uses ~8 GB during inference. Reserve ~15 GB disk space (Docker images + two Ollama model downloads: `nomic-embed-text` ~274 MB + `qwen2.5:7b` ~4 GB).
 
 **Clone the repo:**
 
@@ -70,6 +93,29 @@ pip install -r requirements.txt
 
 ---
 
+## Using an AI assistant to set up this project
+
+If you have access to an AI coding assistant, you can use it to guide the setup interactively — especially useful if you hit errors or are unfamiliar with one of the tools.
+
+### Claude Code (best experience)
+
+This repo includes a `CLAUDE.md` that gives Claude full project context automatically. In the project directory, start a session and ask:
+
+```
+claude
+```
+> "Help me set up this project from scratch on [Windows / macOS / Linux]. Walk me through each step and help me fix any errors."
+
+Claude Code reads `CLAUDE.md`, all source files, and your terminal output — it can diagnose errors in context.
+
+### Cursor / GitHub Copilot / Windsurf
+
+Open the project folder in your IDE — the AI already sees `CLAUDE.md` and all source files. Ask in the chat panel:
+
+> "Help me set up this project step by step. I'm on [Windows / macOS / Linux]."
+
+---
+
 ## Repository Layout
 
 ```
@@ -85,7 +131,10 @@ exasol-dbt-manufacturing/
 │   ├── seed_iot_from_uci.py    # Real-world UCI AI4I dataset loader
 │   ├── setup_ai_tables.py      # AI vector store seed (failure patterns)
 │   ├── factory_ai_agent.py     # AI agent: detect → retrieve → reason → recommend
-│   └── pull_ollama_model.py    # Pull Ollama LLM model (first run only)
+│   ├── pull_ollama_model.py    # Pull Ollama models: nomic-embed-text + qwen2.5:7b (first run only)
+│   ├── dashboard.py            # Streamlit multi-page dashboard (pipeline runner + analytics)
+│   └── pages/                  # Streamlit pages: OEE, Machine Health, AI Queue, Production
+│       └── utils.py            # Shared DB connection + query helpers for dashboard pages
 │
 ├── dbt_project/
 │   ├── profiles.yml.template   # Copy to ~/.dbt/profiles.yml (Step 1b)
@@ -101,7 +150,9 @@ exasol-dbt-manufacturing/
 │   └── definitions.py          # Definitions, job, sensor wiring
 │
 └── docs/
-    └── findings.html           # Implementation notes + Exasol quirks
+    ├── ai-system-guide.md      # Deep-dive: embeddings, RAG pipeline, why it works
+    ├── dbt-dagster-guide.md    # Deep-dive: dbt layers, Dagster assets, glossary
+    └── query-reference.md      # SQL queries to verify each setup step
 ```
 
 ---
@@ -171,37 +222,45 @@ Downloads `dbt_utils` package (~1 MB, internet required on first run), then buil
 
 ```powershell
 .\run.ps1 dbt-test    # optional — run OEE bounds + nullability tests
-.\run.ps1 docs        # optional — serve lineage graph at http://localhost:8081
+.\run.ps1 docs        # optional — serve lineage graph at http://localhost:8082
 ```
 
 ---
 
 ### Step 4 — Set up the AI layer
 
+> **Requires:** Step 2 (seed) and Step 3 (dbt-run) must have completed successfully.
+> `ai-setup` reads from `MARTS.MART_MACHINE_HEALTH` and `MARTS.MART_OEE_DAILY` to seed the vector store.
+
 ```powershell
 .\run.ps1 ai-setup
 ```
 
-- Creates `AI_SCHEMA.FAILURE_PATTERNS` and seeds ~241 historical failure pattern vectors
-- Pulls the Ollama model `qwen2.5:7b` — **~4 GB download, takes 5–30 min depending on your connection** (first run only; subsequent runs are instant)
+- Creates `AI_SCHEMA.FAILURE_PATTERNS` and seeds ~241 historical failure event embeddings (calls Ollama's `nomic-embed-text` once per event — takes ~60 seconds)
+- Pulls two Ollama models on first run: `nomic-embed-text` (**~274 MB**) and `qwen2.5:7b` (**~4 GB**). Subsequent runs are instant — models are cached in the `ollama_data` Docker volume
+- Safe to re-run: drops and recreates `AI_SCHEMA` tables each time (`.\run.ps1 clean-ai` does the same without a full teardown)
 
 ---
 
 ### Step 5 — Run the AI agent
+
+> **Requires:** Step 4 (ai-setup) must have completed successfully.
+> The agent reads from the failure pattern vectors seeded in Step 4.
 
 ```powershell
 .\run.ps1 ai-agent
 ```
 
 Processes each at-risk machine in sequence:
-1. Builds a 6D feature vector (machine type, temp/vibration/power Z-scores, OEE drop)
-2. Runs cosine similarity SQL inside Exasol to retrieve the top-3 similar past failures
-3. Calls Ollama (`qwen2.5:7b`, local) with the machine stats + similar failures
-4. Inserts the LLM response into `AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS`
+1. Builds a natural-language description of the machine's current sensor state
+2. Embeds that description via `nomic-embed-text` (Ollama) → 768-dimensional vector
+3. Fetches all stored failure pattern embeddings from Exasol, ranks by cosine similarity (Python/numpy) → top-3 most similar past failures
+4. Calls Ollama (`qwen2.5:7b`, local) with the machine stats + similar failures
+5. Inserts the LLM response into `AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS`
 
 **Takes ~5–15 minutes** (roughly 60–90 seconds per at-risk machine).
 
-After it finishes, query the results (see [Connecting to Exasol](#connecting-to-exasol)):
+After it finishes, query the results (see [Connecting to Exasol](#connecting-to-exasol) or the full **[Query Reference](docs/query-reference.md)**):
 
 ```sql
 SELECT machine_name, urgency_tier, estimated_hours_to_failure,
@@ -243,27 +302,45 @@ To simulate live sensor data flowing in:
 
 ## Connecting to Exasol
 
-Use Python with pyexasol (already installed) to run SQL queries:
+The recommended SQL client for exploring the data is **DbVisualizer** — it has a built-in Exasol driver and lets you browse schemas, run queries, and inspect table contents without any setup.
 
-```python
-import pyexasol
-con = pyexasol.connect(
-    dsn="localhost:8563",
-    user="sys",
-    password="exasol",
-    websocket_sslopt={"cert_reqs": 0}
-)
-result = con.execute("SELECT COUNT(*) FROM IOT_RAW.SENSOR_READINGS").fetchval()
-print(result)   # ~260 000
-con.close()
+### DbVisualizer (recommended)
+
+1. Download and install DbVisualizer Free from [dbvis.com](https://www.dbvis.com)
+2. Open DbVisualizer → **Database → Create Database Connection**
+3. Select **Exasol** from the driver list (no manual driver download needed)
+4. Fill in the connection details:
+
+| Field | Value |
+|---|---|
+| **Host** | `localhost` |
+| **Port** | `8563` |
+| **User** | `sys` |
+| **Password** | `exasol` |
+| **Auto Commit** | On |
+
+5. Click **Connect** — you should see the schemas `IOT_RAW`, `ERP_PG`, `MARTS`, `AI_SCHEMA` in the left panel
+
+**Useful queries to run after connecting** (see also [docs/query-reference.md](docs/query-reference.md) for per-step verification queries):
+
+```sql
+-- Verify row counts
+SELECT COUNT(*) FROM IOT_RAW.SENSOR_READINGS;          -- ~260 000
+SELECT COUNT(*) FROM ERP_PG.MACHINES;                  -- 10 (Virtual Schema working)
+SELECT COUNT(*) FROM AI_SCHEMA.FAILURE_PATTERNS;       -- ~241
+
+-- See the AI maintenance queue
+SELECT machine_name, urgency_tier, estimated_hours_to_failure,
+       root_cause, recommended_action, confidence
+FROM MARTS.MART_AI_MAINTENANCE_QUEUE
+ORDER BY
+    CASE urgency_tier
+        WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+        WHEN 'MEDIUM'   THEN 3 ELSE 4
+    END;
 ```
 
-Alternatively, connect with any JDBC-compatible SQL client (e.g. DBeaver) using:
-- **Host:** `localhost`
-- **Port:** `8563`
-- **User:** `sys`
-- **Password:** `exasol`
-- **Driver:** Exasol JDBC (download from exasol.com)
+> **SSL note:** Exasol in Docker uses a self-signed certificate. If DbVisualizer shows an SSL warning, go to **Connection → Advanced → SSL** and set **Trust Server Certificate** to `true`.
 
 ---
 
@@ -314,51 +391,31 @@ World-class OEE ≥ 85%. A typical unoptimised plant runs 40–60%.
 
 ## AI System — How It Works
 
-```
-IoT Sensor Readings  ──►  mart_machine_health (anomaly_flag + sensor stats)
-                                    │
-                                    ▼
-                          factory_ai_agent.py
-                            │
-                            ├─ 1. Find at-risk machines
-                            │     (anomaly=TRUE or OEE below 7-day average)
-                            │
-                            ├─ 2. Build 6D feature vector per machine
-                            │     (machine_type_code, temp_zscore, vib_zscore,
-                            │      pwr_zscore, oee_drop, downtime_hrs)
-                            │
-                            ├─ 3. Cosine similarity SQL in Exasol
-                            │     → top-3 most similar past failures
-                            │     (Exasol acting as vector store — no Pinecone/Chroma)
-                            │
-                            ├─ 4. Call Ollama (qwen2.5:7b, local Docker)
-                            │     → root_cause, recommended_action,
-                            │       estimated_hours_to_failure, confidence
-                            │
-                            └─ 5. INSERT into AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS
-                                            │
-                                            ▼
-                              mart_ai_maintenance_queue  (dbt mart)
-                              OEE trend + sensor anomaly + AI recommendation
-```
+The AI layer is a **RAG pipeline** (Retrieval-Augmented Generation) running entirely locally — no cloud API, no API key. Two Ollama models handle the work:
+
+| Model | Role | Size |
+|---|---|---|
+| `nomic-embed-text` | Embeds failure event descriptions into 768-dimensional vectors | ~274 MB |
+| `qwen2.5:7b` | Reads machine context + similar past failures, writes the recommendation | ~4 GB |
+
+**Short version of the pipeline:**
+1. Find machines where `anomaly_flag = TRUE` or OEE is declining week-on-week
+2. Describe each machine's current sensor state in plain text
+3. Embed that description via `nomic-embed-text` → 768-dimensional vector
+4. Fetch all stored failure embeddings from `AI_SCHEMA.FAILURE_PATTERNS` (Exasol), rank by cosine similarity (numpy) → top-3 most similar past failures
+5. Send machine stats + those 3 failures to `qwen2.5:7b` → JSON recommendation
+6. Insert result into `AI_SCHEMA.MAINTENANCE_RECOMMENDATIONS` → read by the dbt mart
+
+> **Full explanation** — what embeddings are, why they're better than hand-crafted features, how cosine similarity works, and why the architecture is interesting: see **[docs/ai-system-guide.md](docs/ai-system-guide.md)**.
 
 ### Urgency tiers (computed in the mart)
 
-| Tier | Hours to estimated failure |
+| Tier | Condition |
 |---|---|
-| CRITICAL | ≤ 8 h |
+| CRITICAL | `estimated_hours_to_failure` ≤ 8 h |
 | HIGH | ≤ 24 h |
 | MEDIUM | ≤ 72 h |
 | LOW | > 72 h |
-
-### Why this is interesting
-
-| Concept | Detail |
-|---|---|
-| **Exasol as vector store** | Failure patterns are 6D vectors stored in Exasol. Cosine similarity runs as pure SQL — no external vector database required |
-| **100% local LLM** | `qwen2.5:7b` via Ollama in Docker — no cloud API, no API key, works in air-gapped factory environments |
-| **AI output in dbt lineage** | `mart_ai_maintenance_queue` is a dbt model — AI recommendations are first-class in the lineage graph and dbt docs |
-| **Closed feedback loop** | IoT data → Exasol analytics → AI agent → Exasol recommendation table → dbt mart → dashboards |
 
 ---
 
@@ -399,24 +456,43 @@ up              Start all Docker containers (waits until ready)
 seed            Seed Exasol + PostgreSQL with synthetic IoT and ERP data
 dbt-run         Build all 12 dbt models
 dbt-test        Run dbt tests (OEE bounds, not_null, unique)
-docs            Generate and serve dbt docs at http://localhost:8081
+docs            Generate and serve dbt docs at http://localhost:8082
 
-seed-uci        Load real UCI AI4I 2020 Predictive Maintenance dataset (batch)
-seed-uci-live   Stream UCI data in real time (one reading per machine per 5 min)
+seed-uci        Replace synthetic IoT data with real UCI AI4I 2020 dataset (batch, then dbt-run)
+seed-uci-live   Stream UCI data in real time (one reading per machine per 5 min, Ctrl+C to stop)
 
-ai-setup        Create AI tables + seed failure vectors + pull Ollama model
-ai-agent        Run the Factory AI Agent (~5-15 min)
+ai-setup        Create AI tables + seed failure embeddings + pull nomic-embed-text (~274 MB) and qwen2.5:7b (~4 GB, first run only)
+ai-agent        Run the Factory AI Agent (~5-15 min, requires ai-setup)
 
-orchestrate     Start Dagster UI at http://localhost:3000
+dashboard       Open Streamlit analytics dashboard at http://localhost:8501
+orchestrate     Start Dagster automation UI at http://localhost:3000
 demo            Full pipeline: up + seed + dbt-run + dbt-test + docs
+clean-ai        Drop AI_SCHEMA tables only (containers keep running — re-run ai-setup to rebuild)
 clean           Stop containers and remove all volumes
 ```
+
+### Which seed command to use?
+
+| Command | When to use |
+|---|---|
+| `seed` | First run, or to reset back to clean synthetic data |
+| `seed-uci` | Replace synthetic data with the real UCI AI4I 2020 dataset (more realistic anomalies) |
+| `seed-uci-live` | Simulate a live factory: new readings arrive every 5 min. Run alongside `orchestrate` to see the full automated loop |
+
+### Dashboard vs. Dagster
+
+| Tool | Purpose | Start with |
+|---|---|---|
+| **Streamlit dashboard** (`dashboard`) | Explore OEE, sensor health, AI queue, and production KPIs interactively. No pipeline control. | `.\run.ps1 dashboard` |
+| **Dagster UI** (`orchestrate`) | Trigger and monitor the full pipeline. Automate re-runs on new sensor data. | `.\run.ps1 orchestrate` |
+
+Both can run at the same time — Dagster updates the data, Streamlit shows it.
 
 ---
 
 ## Verification Checklist
 
-After completing Steps 1–5, verify everything is working using the [Python connection snippet](#connecting-to-exasol):
+After completing Steps 1–5, verify everything is working. Use the **[Query Reference](docs/query-reference.md)** for the full set of per-step SQL queries, or run the quick health check below in DbVisualizer:
 
 - [ ] `docker ps` shows `mfg_exasol`, `mfg_postgres`, `mfg_ollama` all running
 - [ ] `SELECT COUNT(*) FROM IOT_RAW.SENSOR_READINGS` returns ~260 000
@@ -430,12 +506,36 @@ After completing Steps 1–5, verify everything is working using the [Python con
 
 ---
 
+## Troubleshooting
+
+**`.\run.ps1 up` hangs waiting for Exasol**
+Exasol takes ~90 seconds to initialise its internal storage on first start. If it hasn't become ready after 3 minutes, run `docker logs mfg_exasol --tail 50` to check for errors. A common cause is insufficient memory — ensure Docker Desktop has at least 8 GB RAM allocated.
+
+**`dbt run` fails with "object ERP_PG.MACHINES not found"**
+The Virtual Schema wasn't created yet. Run `.\run.ps1 seed` first.
+
+**`dbt run` fails with "schema STAGING does not exist"**
+This resolves itself on first run — dbt creates the schema automatically. If it persists, check that `~/.dbt/profiles.yml` exists (Step 1b) and that `user: sys` has `CREATE SCHEMA` privileges.
+
+**`.\run.ps1 ai-setup` fails with "table MARTS.MART_MACHINE_HEALTH not found"**
+Step 3 (`dbt-run`) must complete successfully before Step 4. Run `.\run.ps1 dbt-run` first.
+
+**Ollama model download stalls or times out**
+`ai-setup` pulls two models: `nomic-embed-text` (~274 MB) and `qwen2.5:7b` (~4 GB). On a slow connection `qwen2.5:7b` can take 30+ minutes. The script retries up to 3 times with backoff. To pull manually: `docker exec mfg_ollama ollama pull nomic-embed-text` and `docker exec mfg_ollama ollama pull qwen2.5:7b`.
+
+**`.\run.ps1 ai-agent` produces no recommendations**
+Check that at-risk machines exist: `SELECT * FROM MARTS.MART_MACHINE_HEALTH WHERE ANOMALY_FLAG = TRUE`. If the table is empty, the seed data may not have generated anomalies — run `.\run.ps1 seed` again to regenerate.
+
+**Dagster sensor shows "No new rows" indefinitely**
+The sensor compares `COUNT(*)` to its last-seen cursor. After a `clean` + `seed` cycle the row count resets, but the cursor still holds the old value. Fix: in the Dagster UI, go to **Automation → new_sensor_data_sensor → Reset cursor**, then re-enable.
+
+---
+
 ## What's Next
 
 | Extension | How |
 |---|---|
-| **Production scale** | Swap Exasol Nano for Exasol SaaS — only the `~/.dbt/profiles.yml` host changes |
+| **Production scale** | Swap `exasol/docker-db` (community Docker image) for Exasol SaaS — only the `~/.dbt/profiles.yml` host changes |
 | **Live dashboard** | Point Metabase or Grafana at `MARTS.MART_AI_MAINTENANCE_QUEUE` |
-| **Better embeddings** | Replace the 6D feature vector with `nomic-embed-text` embeddings via Ollama |
 | **Real IoT ingest** | Replace the seed script with a Kafka → Exasol connector |
 | **Larger LLM** | Swap `qwen2.5:7b` for `qwen2.5-coder:14b` in Ollama for higher-quality reasoning |
