@@ -159,24 +159,67 @@ exasol-dbt-manufacturing/
 
 ## Quickstart — Full End-to-End
 
-### Step 1 — Start the containers
+Two ways to run the pipeline — the dashboard is easier:
+
+---
+
+### Option A — Dashboard (recommended)
+
+The Streamlit dashboard has a built-in pipeline runner. Run three commands, then click through the steps in your browser.
+
+**1. Start the containers**
+
+```powershell
+.\run.ps1 up          # Windows
+make up               # macOS / Linux
+```
+
+Starts Exasol, PostgreSQL, and Ollama. **First start takes ~2 minutes** while Exasol initialises.
+
+**2. Configure dbt**
+
+```powershell
+# Windows
+New-Item -ItemType Directory -Force $HOME\.dbt | Out-Null
+Copy-Item dbt_project\profiles.yml.template $HOME\.dbt\profiles.yml
+
+# macOS / Linux
+mkdir -p ~/.dbt && cp dbt_project/profiles.yml.template ~/.dbt/profiles.yml
+```
+
+**3. Launch the dashboard**
+
+```powershell
+.\run.ps1 dashboard   # Windows
+make dashboard        # macOS / Linux
+```
+
+Opens **http://localhost:8501**. Click **▶ Run** on each step in order:
+
+| Step | What it does | Time |
+|---|---|---|
+| Step 1 — Start containers | Verifies all services are running | instant |
+| Step 2 — Seed data | Loads ~260 k IoT rows + ERP data into Exasol | ~5–10 min |
+| Step 3 — Run dbt models | Builds all 12 dbt models (staging → marts) | ~25 sec |
+| Step 4 — Set up AI layer | Pulls Ollama models (~4.3 GB first run) + embeds 241 failure patterns | ~5–10 min |
+| Step 5 — Run AI agent | Detects at-risk machines, generates recommendations | ~5–15 min |
+
+Output streams live in the browser as each step runs. Once all five are green, switch to the analytics pages in the sidebar (OEE Overview, Machine Health, AI Queue, Production).
+
+---
+
+### Option B — Command line
+
+<details>
+<summary>Expand for manual step-by-step commands</summary>
+
+**Step 1 — Start the containers**
 
 ```powershell
 .\run.ps1 up
 ```
 
-Starts three Docker services and waits until all are ready:
-- `exasol` — Exasol on ports `8563` (SQL) / `2581` (BucketFS)
-- `postgres` — PostgreSQL ERP data
-- `ollama` — Local LLM server on port `11434`
-
-**First start takes ~2 minutes** while Exasol initialises its internal storage.
-
----
-
-### Step 1b — Configure dbt connection
-
-dbt needs a connection profile in your home directory:
+**Step 1b — Configure dbt connection**
 
 ```powershell
 # Windows
@@ -188,17 +231,13 @@ mkdir -p ~/.dbt
 cp dbt_project/profiles.yml.template ~/.dbt/profiles.yml
 ```
 
-The default values connect to the local Docker Exasol — no edits needed.
-
----
-
-### Step 2 — Seed the data
+**Step 2 — Seed the data**
 
 ```powershell
 .\run.ps1 seed
 ```
 
-Downloads two JDBC adapter JARs (~20 MB, internet required), uploads them to Exasol's BucketFS, creates all schemas and the Virtual Schema pointing at PostgreSQL, then loads:
+Downloads two JDBC adapter JARs (~20 MB), uploads to Exasol BucketFS, creates all schemas + Virtual Schema, and loads:
 
 | Table | Rows | Description |
 |---|---|---|
@@ -208,44 +247,23 @@ Downloads two JDBC adapter JARs (~20 MB, internet required), uploads them to Exa
 | `IOT_RAW.SENSOR_READINGS` | ~260 000 | 5-min sensor readings, 90 days |
 | `IOT_RAW.DOWNTIME_EVENTS` | ~260 | Derived from sensor anomalies |
 
-**Takes ~5–10 minutes** on first run.
-
----
-
-### Step 3 — Run the dbt pipeline
+**Step 3 — Run the dbt pipeline**
 
 ```powershell
 .\run.ps1 dbt-run
+.\run.ps1 dbt-test    # optional
+.\run.ps1 docs        # optional — lineage graph at http://localhost:8082
 ```
 
-Downloads `dbt_utils` package (~1 MB, internet required on first run), then builds all 12 models in dependency order. **Takes ~25 seconds.**
-
-```powershell
-.\run.ps1 dbt-test    # optional — run OEE bounds + nullability tests
-.\run.ps1 docs        # optional — serve lineage graph at http://localhost:8082
-```
-
----
-
-### Step 4 — Set up the AI layer
-
-> **Requires:** Step 2 (seed) and Step 3 (dbt-run) must have completed successfully.
-> `ai-setup` reads from `MARTS.MART_MACHINE_HEALTH` and `MARTS.MART_OEE_DAILY` to seed the vector store.
+**Step 4 — Set up the AI layer**
 
 ```powershell
 .\run.ps1 ai-setup
 ```
 
-- Creates `AI_SCHEMA.FAILURE_PATTERNS` and seeds ~241 historical failure event embeddings (calls Ollama's `nomic-embed-text` once per event — takes ~60 seconds)
-- Pulls two Ollama models on first run: `nomic-embed-text` (**~274 MB**) and `qwen2.5:7b` (**~4 GB**). Subsequent runs are instant — models are cached in the `ollama_data` Docker volume
-- Safe to re-run: drops and recreates `AI_SCHEMA` tables each time (`.\run.ps1 clean-ai` does the same without a full teardown)
+Pulls `nomic-embed-text` (~274 MB) and `qwen2.5:7b` (~4 GB) on first run, then embeds 241 failure patterns into `AI_SCHEMA.FAILURE_PATTERNS`.
 
----
-
-### Step 5 — Run the AI agent
-
-> **Requires:** Step 4 (ai-setup) must have completed successfully.
-> The agent reads from the failure pattern vectors seeded in Step 4.
+**Step 5 — Run the AI agent**
 
 ```powershell
 .\run.ps1 ai-agent
@@ -274,6 +292,8 @@ ORDER BY
     ELSE 4
   END;
 ```
+
+</details>
 
 ---
 
